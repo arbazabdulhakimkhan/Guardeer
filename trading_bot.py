@@ -51,13 +51,13 @@ if MODE == "live":
     FEE_RATE = 0.0
 
 # KuCoin API keys
-API_KEY = os.getenv("KUCOIN_API_KEY", "68a793568711080001ae0433")
-API_SECRET = os.getenv("KUCOIN_SECRET", "75403411-c75b-4964-ba6f-aecbcf6af91f")
-API_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE", "Arbazkucoin11")
+API_KEY = os.getenv("KUCOIN_API_KEY", "")
+API_SECRET = os.getenv("KUCOIN_SECRET", "")
+API_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE", "")
 
 # Telegram alerts
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7715595055:AAHyOcJUzDGrDgNaN5x5u-HG9sqdjitqGYs")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "677683819")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 LOG_PREFIX = "[BOT]"
 
@@ -486,3 +486,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
