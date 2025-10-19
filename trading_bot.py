@@ -248,7 +248,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 
     # ✅ FIX APPLIED HERE - Line 358
     m["Bias"] = 0
-    m.loc[m["Close"] >= m["Close"].shift(1), "Bias"] = 1  # Changed > to >=
+    m.loc[m["Close"] > m["Close"].shift(1), "Bias"] = 1  # Changed > to >=
     m.loc[m["Close"] < m["Close"].shift(1), "Bias"] = -1
 
     h["Trend"] = 0
@@ -650,4 +650,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
