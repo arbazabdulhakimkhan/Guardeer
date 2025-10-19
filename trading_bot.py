@@ -5,23 +5,17 @@ import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 import requests
-import pytz  # ✅ NEW: Added for IST timezone support
+import pytz
 
 load_dotenv()
 
-# ----------------------------
-# ✅ NEW: TIMEZONE SUPPORT - IST
-# ----------------------------
-# WHY: Display all logs and timestamps in Indian Standard Time with AM/PM format
-# Makes it easy to understand when trades happen in your local timezone
+# Timezone support - IST
 IST = pytz.timezone('Asia/Kolkata')
 
 def get_ist_time():
-    """Get current time in IST"""
     return datetime.now(IST)
 
 def utc_to_ist(utc_dt):
-    """Convert UTC datetime to IST"""
     if utc_dt is None:
         return None
     if utc_dt.tzinfo is None:
@@ -29,22 +23,18 @@ def utc_to_ist(utc_dt):
     return utc_dt.astimezone(IST)
 
 def format_ist_time(dt):
-    """Format datetime in IST with AM/PM"""
     if dt is None:
         return "N/A"
     ist_dt = utc_to_ist(dt) if dt.tzinfo is None or dt.tzinfo == pytz.utc else dt
     return ist_dt.strftime('%Y-%m-%d %I:%M:%S %p IST')
 
-# ----------------------------
-# CONFIG - Auto from Environment Variables
-# ----------------------------
+# CONFIG
 MODE = os.getenv("MODE", "paper").lower()
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "kucoin")
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT").split(",") if s.strip()]
 ENTRY_TF = os.getenv("ENTRY_TF", "1h")
 HTF = os.getenv("HTF", "4h")
 
-# DYNAMIC 20% ALLOCATION
 TOTAL_PORTFOLIO_CAPITAL = float(os.getenv("TOTAL_PORTFOLIO_CAPITAL", "10000"))
 PER_COIN_ALLOCATION = float(os.getenv("PER_COIN_ALLOCATION", "0.20"))
 PER_COIN_CAP_USD = TOTAL_PORTFOLIO_CAPITAL * PER_COIN_ALLOCATION
@@ -72,33 +62,26 @@ SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
 FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))
 SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
 
-# Debug mode
 DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
-# Auto-disable modeled fees/slippage in live mode
 if MODE == "live":
     SLIPPAGE_RATE = 0.0
     FEE_RATE = 0.0
 
-# KuCoin API keys - SECURE VERSION (NO HARDCODED VALUES)
 API_KEY = os.getenv("KUCOIN_API_KEY", "")
 API_SECRET = os.getenv("KUCOIN_SECRET", "")
 API_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE", "")
 
-# Telegram alerts - SECURE VERSION (NO HARDCODED VALUES)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 LOG_PREFIX = "[BOT]"
 
-# Add credential validation
 if MODE == "live":
     if not API_KEY or not API_SECRET or not API_PASSPHRASE:
-        raise ValueError("KuCoin API credentials not found! Set KUCOIN_API_KEY, KUCOIN_SECRET, KUCOIN_PASSPHRASE in environment variables.")
+        raise ValueError("KuCoin API credentials not found!")
 
-# ----------------------------
 # Utilities
-# ----------------------------
 def send_telegram(msg: str):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print(f"[TELEGRAM] No credentials - would send: {msg}")
@@ -114,7 +97,7 @@ def send_telegram(msg: str):
         else:
             print(f"[TELEGRAM] ❌ Failed ({response.status_code}): {msg[:50]}...")
     except Exception as e:
-        print(f"[TELEGRAM] ❌ Error sending message: {e}")
+        print(f"[TELEGRAM] ❌ Error: {e}")
 
 def timeframe_to_minutes(tf: str) -> int:
     tf = tf.strip().lower()
@@ -146,7 +129,7 @@ def fetch_ohlcv_df(exchange, symbol, timeframe, limit=500):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         if not ohlcv:
-            print(f"[DATA] ❌ {symbol} {timeframe}: No OHLCV data returned")
+            print(f"[DATA] ❌ {symbol} {timeframe}: No OHLCV data")
             return pd.DataFrame(columns=["Open","High","Low","Close","Volume"])
         
         df = pd.DataFrame(ohlcv, columns=["timestamp","Open","High","Low","Close","Volume"])
@@ -157,12 +140,11 @@ def fetch_ohlcv_df(exchange, symbol, timeframe, limit=500):
         
         df_clean = df.dropna()
         if DEBUG_MODE:
-            # ✅ UPDATED: Show latest candle time in IST
             latest_ist = utc_to_ist(df_clean.index[-1])
             print(f"[DATA] ✅ {symbol} {timeframe}: {len(df_clean)} bars | Latest: {latest_ist.strftime('%Y-%m-%d %I:%M %p IST')} | Close: {df_clean['Close'].iloc[-1]:.2f}")
         return df_clean
     except Exception as e:
-        print(f"[DATA] ❌ {symbol} {timeframe} fetch error: {e}")
+        print(f"[DATA] ❌ {symbol} {timeframe} error: {e}")
         return pd.DataFrame(columns=["Open","High","Low","Close","Volume"])
 
 def calculate_atr(df, period=14):
@@ -189,7 +171,6 @@ def load_state(state_file):
             s = json.load(f)
         s["entry_time"] = pd.to_datetime(s["entry_time"]) if s.get("entry_time") else None
         s["last_processed_ts"] = pd.to_datetime(s["last_processed_ts"]) if s.get("last_processed_ts") else None
-        # ✅ FIX: Add last_entry_attempt_ts to prevent duplicate entries
         s["last_entry_attempt_ts"] = pd.to_datetime(s["last_entry_attempt_ts"]) if s.get("last_entry_attempt_ts") else None
         return s
     return {
@@ -202,7 +183,7 @@ def load_state(state_file):
         "entry_size": 0.0,
         "peak_equity": PER_COIN_CAP_USD,
         "last_processed_ts": None,
-        "last_entry_attempt_ts": None,  # ✅ FIX: Track last entry attempt for cooldown
+        "last_entry_attempt_ts": None,
         "bearish_count": 0
     }
 
@@ -210,7 +191,6 @@ def save_state(state_file, state):
     s = dict(state)
     s["entry_time"] = state["entry_time"].isoformat() if state["entry_time"] is not None else None
     s["last_processed_ts"] = state["last_processed_ts"].isoformat() if state["last_processed_ts"] is not None else None
-    # ✅ FIX: Save last_entry_attempt_ts
     s["last_entry_attempt_ts"] = state["last_entry_attempt_ts"].isoformat() if state.get("last_entry_attempt_ts") is not None else None
     with open(state_file, "w") as f:
         json.dump(s, f, indent=2)
@@ -219,9 +199,7 @@ def append_trade(csv_file, row):
     write_header = not os.path.exists(csv_file)
     pd.DataFrame([row]).to_csv(csv_file, mode="a", header=write_header, index=False)
 
-# ----------------------------
-# Precision (live)
-# ----------------------------
+# Precision
 class MarketInfo:
     def __init__(self, exchange, symbol):
         mkts = exchange.load_markets()
@@ -258,30 +236,19 @@ def avg_fill_price_from_order(order):
         if qty > 0: return notional / qty
     return None
 
-# ----------------------------
 # Strategy core per bar
-# ----------------------------
 def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: MarketInfo=None):
-    """
-    ✅ CRITICAL FIX: This function now ONLY processes CLOSED candles (second-to-last bar)
-    WHY: Backtest processes complete historical candles. Live bot was processing forming candles
-         multiple times, causing 5-6 entries where backtest had 2. This matches backtest behavior.
-    """
-    # ===== FIX #1: Ensure we have enough data for closed candle analysis =====
     if len(entry_df) < 2:
         if DEBUG_MODE:
-            print(f"[PROCESS] {symbol} | Need at least 2 bars for closed candle")
+            print(f"[PROCESS] {symbol} | Need at least 2 bars")
         return state, None
     
-    # ===== FIX #2: Get CLOSED candle data (second-to-last bar) =====
-    # WHY: iloc[-1] is the FORMING candle (incomplete), iloc[-2] is the CLOSED candle (complete)
-    # This matches your backtest which only sees complete candles
-    m = entry_df.iloc[-2:].copy()  # Get last 2 bars for calculations
+    m = entry_df.iloc[-2:].copy()
     h = htf_df.copy()
 
-    # Bias and HTF trend
+    # ✅ FIX APPLIED HERE - Line 358
     m["Bias"] = 0
-    m.loc[m["Close"] > m["Close"].shift(1), "Bias"] = 1
+    m.loc[m["Close"] >= m["Close"].shift(1), "Bias"] = 1  # Changed > to >=
     m.loc[m["Close"] < m["Close"].shift(1), "Bias"] = -1
 
     h["Trend"] = 0
@@ -289,19 +256,16 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     h.loc[h["Close"] < h["Close"].shift(1), "Trend"] = -1
     m["H4_Trend"] = h["Trend"].reindex(m.index, method="ffill").fillna(0).astype(int)
 
-    # Indicators
     m["ATR"] = calculate_atr(entry_df, ATR_PERIOD).reindex(m.index) if USE_ATR_STOPS else np.nan
     if USE_VOLUME_FILTER:
         m["Avg_Volume"] = entry_df["Volume"].rolling(VOL_LOOKBACK).mean().reindex(m.index)
     m["RSI"] = calculate_rsi(entry_df["Close"], RSI_PERIOD).reindex(m.index)
 
-    # ===== FIX #3: Extract CLOSED candle data =====
-    closed_bar = m.iloc[-2]  # This is the most recent CLOSED candle
-    ts = m.index[-2]  # Timestamp of closed candle
+    closed_bar = m.iloc[-2]
+    ts = m.index[-2]
     price = float(closed_bar["Close"])
     open_px = float(closed_bar["Open"])
     
-    # Previous closed candle (third-to-last)
     if len(entry_df) >= 3:
         prev_close = float(entry_df['Close'].iloc[-3])
     else:
@@ -310,9 +274,8 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     bias = int(closed_bar["Bias"])
     h1_trend = int(closed_bar["H4_Trend"])
 
-    # *** COMPREHENSIVE DEBUG LOGGING WITH IST ***
     if DEBUG_MODE:
-        ts_ist = utc_to_ist(ts)  # ✅ NEW: Convert to IST for readability
+        ts_ist = utc_to_ist(ts)
         print(f"\n{'='*60}")
         print(f"[DEBUG] {symbol} {ts_ist.strftime('%Y-%m-%d %I:%M:%S %p IST')} | Processing CLOSED candle")
         print(f"[DEBUG] {symbol} | OHLC: O={open_px:.2f} H={closed_bar['High']:.2f} L={closed_bar['Low']:.2f} C={price:.2f}")
@@ -326,14 +289,13 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
         print(f"[DEBUG] {symbol} | Position: {state['position']} | Capital: ${state['capital']:.2f}")
         print(f"{'='*60}\n")
 
-    # Drawdown block
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
     curr_dd = (state["peak_equity"] - state["capital"]) / state["peak_equity"] if state["peak_equity"] > 0 else 0.0
     blocked = curr_dd >= MAX_DRAWDOWN
 
     trade_row = None
 
-    # Permanent stop
+    # Permanent stop logic
     if blocked and not state.get("permanently_stopped", False):
         state["permanently_stopped"] = True
         
@@ -376,9 +338,9 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             state.update({"position": 0, "entry_price": 0.0, "entry_sl": 0.0,
                           "entry_tp": 0.0, "entry_time": None, "entry_size": 0.0})
             
-            msg = f"{LOG_PREFIX} {symbol} PERMANENTLY STOPPED DUE TO MAX DRAWDOWN | Final Cap={state['capital']:.2f}"
+            msg = f"{LOG_PREFIX} {symbol} PERMANENTLY STOPPED | Cap={state['capital']:.2f}"
             print(msg)
-            send_telegram(f"🛑 {symbol} PERMANENTLY STOPPED - Max Drawdown Reached!")
+            send_telegram(f"🛑 {symbol} PERMANENTLY STOPPED - Max Drawdown!")
             
             return state, trade_row
 
@@ -450,7 +412,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             state.update({"position": 0, "entry_price": 0.0, "entry_sl": 0.0,
                           "entry_tp": 0.0, "entry_time": None, "entry_size": 0.0})
 
-            # ✅ UPDATED: Show exit time in IST
             ts_ist = utc_to_ist(ts)
             msg = f"{LOG_PREFIX} {symbol} {ts_ist.strftime('%I:%M %p IST')} EXIT {exit_reason} @ {exit_price:.4f} | PnL={pnl:.2f} | Cap={state['capital']:.2f}"
             print(msg)
@@ -458,14 +419,11 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 
     # Entries
     if state["position"] == 0 and not blocked:
-        # ===== FIX #4: Entry cooldown to prevent duplicate entries =====
-        # WHY: Even with closed candle logic, this adds extra safety to prevent
-        #      multiple entries within 60 minutes on the same signals
         if state.get("last_entry_attempt_ts") is not None:
             time_diff_minutes = (ts - state["last_entry_attempt_ts"]).total_seconds() / 60
             if time_diff_minutes < 60:
                 if DEBUG_MODE:
-                    print(f"🚫 [COOLDOWN] {symbol} | Blocked: Only {time_diff_minutes:.1f}min since last entry attempt")
+                    print(f"🚫 [COOLDOWN] {symbol} | Blocked: Only {time_diff_minutes:.1f}min since last entry")
                 state["last_processed_ts"] = ts
                 return state, None
         
@@ -476,7 +434,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
         rsi_ok = True if np.isnan(closed_bar["RSI"]) else closed_bar["RSI"] > RSI_OVERSOLD
         h1_ok = (not USE_H1_FILTER) or (h1_trend == 1)
 
-        # *** DETAILED ENTRY CONDITIONS DEBUG ***
         if DEBUG_MODE:
             print(f"[ENTRY CHECK] {symbol} | Looking for entry...")
             print(f"[ENTRY CHECK] {symbol} | Price > Open: {price:.2f} > {open_px:.2f} = {price > open_px}")
@@ -501,7 +458,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                     return state, trade_row
                 sl = price - (ATR_MULT_SL * atr_val)
                 if DEBUG_MODE:
-                    print(f"[ENTRY] {symbol} | ATR SL: {price:.2f} - ({ATR_MULT_SL} * {atr_val:.4f}) = {sl:.2f}")
+                    print(f"[ENTRY] {symbol} | ATR SL: {sl:.2f}")
             else:
                 sweep_buffer = min(max(price * 0.0005, 0.0005), 0.0015)
                 sl = price * (1 - sweep_buffer)
@@ -517,7 +474,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 
             rr_ratio = RR_FIXED
             if DYNAMIC_RR and USE_ATR_STOPS:
-                # Calculate recent ATR from full dataframe
                 recent_atr_series = calculate_atr(entry_df, ATR_PERIOD)
                 if len(recent_atr_series) >= 6:
                     recent_atr = float(recent_atr_series.iloc[-7:-2].mean())
@@ -527,7 +483,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                         elif curr_atr < recent_atr * 0.8: rr_ratio = MAX_RR
             tp = price + rr_ratio * risk
 
-            # Per-coin cap-aware sizing
             per_coin_cap = PER_COIN_CAP_USD
             available_cap = min(state["capital"], per_coin_cap)
             size_base = (available_cap * RISK_PERCENT) / risk
@@ -536,7 +491,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 
             if DEBUG_MODE:
                 print(f"[ENTRY] {symbol} | Risk: ${risk:.2f} | RR: {rr_ratio} | TP: ${tp:.2f}")
-                print(f"[ENTRY] {symbol} | Size calculation: ${available_cap:.2f} * {RISK_PERCENT} / ${risk:.2f} = {size_base:.6f}")
+                print(f"[ENTRY] {symbol} | Size: {size_base:.6f}")
 
             if size_base > 0:
                 entry_price_used = price
@@ -559,14 +514,13 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_time"] = ts
                 state["entry_size"] = size_base
                 state["bearish_count"] = 0
-                state["last_entry_attempt_ts"] = ts  # ✅ FIX: Track last entry for cooldown
+                state["last_entry_attempt_ts"] = ts
 
                 state["capital"] -= (size_base * SLIPPAGE_RATE)
                 state["capital"] -= (entry_price_used * size_base * FEE_RATE)
 
-                # ✅ UPDATED: Show entry time in IST
                 ts_ist = utc_to_ist(ts)
-                msg = f"{LOG_PREFIX} {symbol} {ts_ist.strftime('%I:%M %p IST')} ENTRY Long @ {entry_price_used:.4f} | SL={sl:.4f} TP={tp:.4f} RR={rr_ratio:.2f} SizeBase={size_base:.6f} Cap={state['capital']:.2f} Mode={MODE}"
+                msg = f"{LOG_PREFIX} {symbol} {ts_ist.strftime('%I:%M %p IST')} ENTRY Long @ {entry_price_used:.4f} | SL={sl:.4f} TP={tp:.4f} RR={rr_ratio:.2f} Size={size_base:.6f} Cap={state['capital']:.2f} Mode={MODE}"
                 print(msg)
                 send_telegram(msg)
         else:
@@ -583,33 +537,19 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
     return state, trade_row
 
-# ----------------------------
 # Worker per symbol
-# ----------------------------
 def worker(symbol):
-    """
-    ✅ MAJOR FIXES IN THIS FUNCTION:
-    1. Only processes CLOSED candles (second-to-last bar)
-    2. Waits 1 minute after candle close for data to be fully updated
-    3. Shows all timestamps in IST with AM/PM format
-    
-    WHY: This makes live trading match backtest exactly:
-    - Backtest: Processes each complete historical candle once
-    - Live (before): Processed forming candles multiple times → 5-6 entries
-    - Live (after): Processes each complete candle once → matches backtest
-    """
     state_file, trades_csv = state_files_for_symbol(symbol)
     exchange = get_exchange()
     market_info = MarketInfo(exchange, symbol) if MODE == "live" else None
     state = load_state(state_file)
     tf_minutes = timeframe_to_minutes(ENTRY_TF)
 
-    print(f"{LOG_PREFIX} Start | {symbol} | TF={ENTRY_TF}/{HTF} | Mode={MODE} | Capital={state['capital']:.2f} | CapLimit={PER_COIN_CAP_USD:.2f}")
+    print(f"{LOG_PREFIX} Start | {symbol} | TF={ENTRY_TF}/{HTF} | Mode={MODE} | Capital={state['capital']:.2f}")
     send_telegram(f"🤖 Started {symbol} {ENTRY_TF}/{HTF} Mode={MODE} Cap=${PER_COIN_CAP_USD}")
 
     while True:
         try:
-            # ✅ NEW: Get current time in both IST and UTC
             now_ist = get_ist_time()
             now_utc = datetime.now(pytz.utc)
             
@@ -620,17 +560,13 @@ def worker(symbol):
             htf_df = fetch_ohlcv_df(exchange, symbol, HTF, limit=600)
 
             if entry_df.empty or htf_df.empty or len(entry_df) < 2:
-                print(f"{LOG_PREFIX} {symbol} No data or insufficient data; wait 30s")
+                print(f"{LOG_PREFIX} {symbol} No data; wait 30s")
                 time.sleep(30)
                 continue
 
-            # ===== FIX #5: Get CLOSED candle timestamp (second-to-last) =====
-            # WHY: entry_df.index[-1] is the FORMING candle (still updating)
-            #      entry_df.index[-2] is the CLOSED candle (finalized data)
-            closed_candle_ts = entry_df.index[-2]  # Most recent CLOSED candle
-            forming_candle_ts = entry_df.index[-1]  # Current FORMING candle
+            closed_candle_ts = entry_df.index[-2]
+            forming_candle_ts = entry_df.index[-1]
 
-            # ✅ NEW: Convert to IST for display
             closed_candle_ist = utc_to_ist(closed_candle_ts)
             forming_candle_ist = utc_to_ist(forming_candle_ts)
 
@@ -641,18 +577,14 @@ def worker(symbol):
                     last_proc_ist = utc_to_ist(state['last_processed_ts'])
                     print(f"[DATA] {symbol} | Last processed: {last_proc_ist.strftime('%Y-%m-%d %I:%M %p IST')}")
 
-            # Initialize if first run
             if state["last_processed_ts"] is None:
                 state["last_processed_ts"] = closed_candle_ts
                 save_state(state_file, state)
                 if DEBUG_MODE:
-                    print(f"[INIT] {symbol} | Initial timestamp: {closed_candle_ist.strftime('%Y-%m-%d %I:%M %p IST')}")
+                    print(f"[INIT] {symbol} | Initial: {closed_candle_ist.strftime('%I:%M %p IST')}")
                 time.sleep(10)
                 continue
 
-            # ===== FIX #6: Only process if this CLOSED candle is NEW =====
-            # WHY: Prevents processing the same candle multiple times
-            #      Each closed candle is processed exactly once (like backtest)
             if closed_candle_ts > state["last_processed_ts"]:
                 if DEBUG_MODE:
                     prev_ist = utc_to_ist(state['last_processed_ts'])
@@ -663,36 +595,31 @@ def worker(symbol):
                 if trade is not None:
                     append_trade(trades_csv, trade)
                     entry_time_ist = format_ist_time(pd.to_datetime(trade['Entry_DateTime']))
-                    print(f"✅ [TRADE LOGGED] {symbol} | Entry: {entry_time_ist} | Saved to {trades_csv}")
+                    print(f"✅ [TRADE LOGGED] {symbol} | Entry: {entry_time_ist}")
                 
                 save_state(state_file, state)
                 last_proc_ist = utc_to_ist(state['last_processed_ts'])
                 print(f"💾 [STATE SAVED] {symbol} | Last processed: {last_proc_ist.strftime('%I:%M %p IST')}")
             else:
                 if DEBUG_MODE and symbol == "BTC/USDT":
-                    print(f"[WORKER] {symbol} | ⏳ Already processed {closed_candle_ist.strftime('%I:%M %p IST')}, waiting...")
+                    print(f"[WORKER] {symbol} | ⏳ Already processed")
 
-            # ===== FIX #7: Smart sleep until next candle close + 1 minute buffer =====
-            # WHY: Wait for next candle to fully close AND give exchange 1 minute to update data
-            #      This ensures we always process complete, finalized candle data
             next_close_utc = forming_candle_ts + timedelta(minutes=tf_minutes)
-            safe_check_time_utc = next_close_utc + timedelta(minutes=1)  # 1 min buffer
+            safe_check_time_utc = next_close_utc + timedelta(minutes=1)
             
-            # ✅ NEW: Convert to IST for display
             next_close_ist = utc_to_ist(next_close_utc)
             safe_check_ist = utc_to_ist(safe_check_time_utc)
             
             sleep_sec = (safe_check_time_utc - now_utc.replace(tzinfo=None)).total_seconds()
             
-            # Ensure reasonable sleep bounds
             if sleep_sec < 10:
                 sleep_sec = 10
             elif sleep_sec > 3600:
                 sleep_sec = SLEEP_CAP
             
             if DEBUG_MODE:
-                print(f"[SLEEP] {symbol} | Next candle closes: {next_close_ist.strftime('%I:%M %p IST')}")
-                print(f"[SLEEP] {symbol} | Will check at: {safe_check_ist.strftime('%I:%M %p IST')} (in {sleep_sec:.0f}s)")
+                print(f"[SLEEP] {symbol} | Next closes: {next_close_ist.strftime('%I:%M %p IST')}")
+                print(f"[SLEEP] {symbol} | Will check: {safe_check_ist.strftime('%I:%M %p IST')} (in {sleep_sec:.0f}s)")
             
             time.sleep(sleep_sec)
 
@@ -706,13 +633,10 @@ def worker(symbol):
             traceback.print_exc()
             time.sleep(60)
 
-# ----------------------------
 # Main
-# ----------------------------
 def main():
-    # Send startup message with IST time
     now_ist = get_ist_time()
-    startup_msg = f"🚀 Guardeer Trading Bot Started!\nTime: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}\nMode: {MODE}\nCoins: {', '.join(SYMBOLS)}\nCapital per coin: ${PER_COIN_CAP_USD}\nDebug: {DEBUG_MODE}"
+    startup_msg = f"🚀 Guardeer Bot Started!\nTime: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}\nMode: {MODE}\nCoins: {', '.join(SYMBOLS)}\nCap/coin: ${PER_COIN_CAP_USD}\nDebug: {DEBUG_MODE}"
     print(startup_msg)
     send_telegram(startup_msg)
     
