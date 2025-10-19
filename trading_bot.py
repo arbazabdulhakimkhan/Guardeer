@@ -243,7 +243,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             print(f"[PROCESS] {symbol} | Need at least 2 bars")
         return state, None
     
-    m = entry_df.iloc[-2:].copy()
+    m = entry_df.iloc[-3:].copy()
     h = htf_df.copy()
 
     # ✅ FIX APPLIED HERE - Line 358
@@ -650,3 +650,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
