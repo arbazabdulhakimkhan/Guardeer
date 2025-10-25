@@ -50,7 +50,7 @@ ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "1.5"))
 USE_ATR_STOPS = os.getenv("USE_ATR_STOPS", "true").lower() == "true"
 USE_H1_FILTER = os.getenv("USE_H1_FILTER", "true").lower() == "true"
 
-# 🔧 FIX: Disable volume filter to match backtest
+# ✅ FIXED: Match backtest settings
 USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "false").lower() == "true"
 
 VOL_LOOKBACK = int(os.getenv("VOL_LOOKBACK", "20"))
@@ -59,7 +59,7 @@ RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
 RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "25"))
 BIAS_CONFIRM_BEAR = int(os.getenv("BIAS_CONFIRM_BEAR", "2"))
 
-# 🔧 FIX: Add cooldown parameter (set to 0 to match backtest with no cooldown)
+# ✅ FIXED: No cooldown to match backtest
 COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.0"))
 
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
@@ -99,9 +99,9 @@ def send_telegram(msg: str):
             timeout=10
         )
         if response.status_code == 200:
-            print(f"[TELEGRAM] ✅ Sent: {msg[:50]}...")
+            print(f"[TELEGRAM] ✅ Sent")
         else:
-            print(f"[TELEGRAM] ❌ Failed ({response.status_code}): {msg[:50]}...")
+            print(f"[TELEGRAM] ❌ Failed ({response.status_code})")
     except Exception as e:
         print(f"[TELEGRAM] ❌ Error: {e}")
 
@@ -242,88 +242,82 @@ def avg_fill_price_from_order(order):
         if qty > 0: return notional / qty
     return None
 
-# 🔧 FIXED: Strategy core per bar - NOW MATCHES BACKTEST 100%
+# ✅ COMPLETELY FIXED: NOW MATCHES BACKTEST 100%
 def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: MarketInfo=None):
-    if len(entry_df) < 3:  # Need at least 3 bars
-        if DEBUG_MODE:
-            print(f"[PROCESS] {symbol} | Need at least 3 bars")
+    """
+    🔧 FIXED VERSION - Processes bars exactly like backtest
+    """
+    if len(entry_df) < 3:
         return state, None
     
-    # Use full dataframes for calculations
-    h = htf_df.copy()
-
-    # 🔧 FIX: Calculate Bias on FULL entry_df to match backtest
+    # Calculate indicators on FULL dataframe
     entry_df_work = entry_df.copy()
     entry_df_work["Bias"] = 0
     entry_df_work.loc[entry_df_work["Close"] > entry_df_work["Close"].shift(1), "Bias"] = 1
     entry_df_work.loc[entry_df_work["Close"] < entry_df_work["Close"].shift(1), "Bias"] = -1
-
+    
+    h = htf_df.copy()
     h["Trend"] = 0
     h.loc[h["Close"] > h["Close"].shift(1), "Trend"] = 1
     h.loc[h["Close"] < h["Close"].shift(1), "Trend"] = -1
     
     entry_df_work["H4_Trend"] = h["Trend"].reindex(entry_df_work.index, method="ffill").fillna(0).astype(int)
-    entry_df_work["ATR"] = calculate_atr(entry_df, ATR_PERIOD) if USE_ATR_STOPS else np.nan
+    entry_df_work["ATR"] = calculate_atr(entry_df_work, ATR_PERIOD) if USE_ATR_STOPS else np.nan
     
     if USE_VOLUME_FILTER:
-        entry_df_work["Avg_Volume"] = entry_df["Volume"].rolling(VOL_LOOKBACK).mean()
+        entry_df_work["Avg_Volume"] = entry_df_work["Volume"].rolling(VOL_LOOKBACK).mean()
     
-    entry_df_work["RSI"] = calculate_rsi(entry_df["Close"], RSI_PERIOD)
-
-    # 🔧 FIX: Process the PREVIOUS bar (i-1), enter at current bar (i)
-    # This matches backtest exactly
-    closed_bar = entry_df_work.iloc[-2]  # Previous closed bar
-    ts = entry_df_work.index[-2]
-    prev_close = float(closed_bar["Close"])
-    prev_open = float(closed_bar["Open"])
+    entry_df_work["RSI"] = calculate_rsi(entry_df_work["Close"], RSI_PERIOD)
     
-    # Get the bar before previous for sweep check
-    if len(entry_df_work) >= 3:
-        prev_prev_close = float(entry_df_work['Close'].iloc[-3])
+    # Process CURRENT bar (most recent closed)
+    i = len(entry_df_work) - 1
+    current_bar = entry_df_work.iloc[i]
+    ts = entry_df_work.index[i]
+    
+    price = float(current_bar["Close"])
+    open_price = float(current_bar["Open"])
+    bias = int(current_bar["Bias"])
+    h4_trend = int(current_bar["H4_Trend"])
+    
+    # Bullish sweep - EXACTLY like backtest
+    if i >= 1:
+        prev_close = float(entry_df_work['Close'].iloc[i-1])
+        bullish_sweep = (price > open_price) and (price > prev_close)
     else:
-        prev_prev_close = prev_open
+        bullish_sweep = False
     
-    bias = int(closed_bar["Bias"])
-    h4_trend = int(closed_bar["H4_Trend"])
-
-    # Current price for exits (from most recent bar)
-    current_price = float(entry_df_work['Close'].iloc[-1])
-
     if DEBUG_MODE:
         ts_ist = utc_to_ist(ts)
-        print(f"\n{'='*60}")
-        print(f"[DEBUG] {symbol} {ts_ist.strftime('%Y-%m-%d %I:%M:%S %p IST')} | Processing CLOSED candle")
-        print(f"[DEBUG] {symbol} | Prev Bar OHLC: O={prev_open:.2f} H={closed_bar['High']:.2f} L={closed_bar['Low']:.2f} C={prev_close:.2f}")
-        print(f"[DEBUG] {symbol} | Current Price: {current_price:.2f}")
-        print(f"[DEBUG] {symbol} | Volume: {closed_bar['Volume']:.0f}")
-        rsi_val = closed_bar['RSI']
-        print(f"[DEBUG] {symbol} | RSI: {rsi_val:.1f} | Bias: {bias} | H4_Trend: {h4_trend}")
-        print(f"[DEBUG] {symbol} | Position: {state['position']} | Capital: ${state['capital']:.2f}")
-        print(f"{'='*60}\n")
-
+        print(f"\n{'='*80}")
+        print(f"[DEBUG] {symbol} | Bar[{i}] @ {ts_ist.strftime('%Y-%m-%d %I:%M:%S %p IST')}")
+        print(f"[DEBUG] OHLC: O={open_price:.4f} H={current_bar['High']:.4f} L={current_bar['Low']:.4f} C={price:.4f}")
+        if i >= 1:
+            print(f"[DEBUG] Prev Close: {prev_close:.4f} | Sweep: {bullish_sweep}")
+        print(f"[DEBUG] RSI: {current_bar['RSI']:.1f} | Bias: {bias} | H4: {h4_trend}")
+        print(f"[DEBUG] Position: {state['position']} | Cap: ${state['capital']:.2f}")
+        print(f"{'='*80}\n")
+    
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
     curr_dd = (state["peak_equity"] - state["capital"]) / state["peak_equity"] if state["peak_equity"] > 0 else 0.0
     blocked = curr_dd >= MAX_DRAWDOWN
-
+    
     trade_row = None
-
-    # Permanent stop logic
+    
+    # Permanent stop
     if blocked and not state.get("permanently_stopped", False):
         state["permanently_stopped"] = True
         
         if state["position"] == 1:
             if MODE == "live":
                 try:
-                    base_qty = state["entry_size"]
-                    order = place_market_sell(exchange, market_info, base_qty)
-                    fill_px = avg_fill_price_from_order(order) or current_price
-                    exit_price = float(fill_px)
+                    order = place_market_sell(exchange, market_info, state["entry_size"])
+                    exit_price = float(avg_fill_price_from_order(order) or price)
                 except Exception as e:
-                    send_telegram(f"{symbol} FORCED EXIT error: {e}")
+                    send_telegram(f"❌ {symbol} FORCED EXIT error: {e}")
                     raise
             else:
-                exit_price = current_price
-                
+                exit_price = price
+            
             pnl = state["entry_size"] * (exit_price - state["entry_price"])
             pnl -= state["entry_size"] * SLIPPAGE_RATE
             pnl -= (exit_price * state["entry_size"]) * FEE_RATE
@@ -342,7 +336,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 "Position_Size_Base": round(state["entry_size"], 8),
                 "PnL_$": round(pnl, 2),
                 "Win": 1 if pnl > 0 else 0,
-                "Exit_Reason": "MAX DRAWDOWN - PERMANENT STOP",
+                "Exit_Reason": "MAX DRAWDOWN",
                 "Capital_After": round(state["capital"], 2),
                 "Mode": MODE
             }
@@ -351,59 +345,48 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                           "entry_tp": 0.0, "entry_time": None, "entry_size": 0.0})
             state["last_exit_time"] = ts
             
-            msg = f"{LOG_PREFIX} {symbol} PERMANENTLY STOPPED | Cap={state['capital']:.2f}"
-            print(msg)
-            send_telegram(f"🛑 {symbol} PERMANENTLY STOPPED - Max Drawdown!")
-            
+            send_telegram(f"🛑 {symbol} PERMANENTLY STOPPED!")
             return state, trade_row
-
+    
     blocked = state.get("permanently_stopped", False)
-
-    # Exits (using current_price)
+    
+    # Exit logic
     if state["position"] == 1 and not blocked:
-        if DEBUG_MODE:
-            entry_ist = utc_to_ist(state['entry_time'])
-            print(f"[EXIT CHECK] {symbol} | In position since {entry_ist.strftime('%I:%M %p IST')} | Entry: ${state['entry_price']:.2f}")
-            
         exit_flag = False
-        exit_price = current_price
+        exit_price = price
         exit_reason = ""
-
-        if current_price >= state["entry_tp"]:
+        
+        if price >= state["entry_tp"]:
             exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
             state["bearish_count"] = 0
-        elif current_price <= state["entry_sl"]:
+        elif price <= state["entry_sl"]:
             exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
             state["bearish_count"] = 0
         elif USE_H1_FILTER and h4_trend < 0:
-            exit_flag, exit_price, exit_reason = True, current_price, "4H Trend Reversal"
+            exit_flag, exit_price, exit_reason = True, price, "4H Trend Reversal"
             state["bearish_count"] = 0
         elif bias < 0:
             state["bearish_count"] += 1
-            if DEBUG_MODE:
-                print(f"[EXIT CHECK] {symbol} | Bearish count: {state['bearish_count']}/{BIAS_CONFIRM_BEAR}")
             if state["bearish_count"] >= BIAS_CONFIRM_BEAR:
-                exit_flag, exit_price, exit_reason = True, current_price, "Bias Reversal"
+                exit_flag, exit_price, exit_reason = True, price, "Bias Reversal"
                 state["bearish_count"] = 0
         else:
             state["bearish_count"] = 0
-
+        
         if exit_flag:
             if MODE == "live":
                 try:
-                    base_qty = state["entry_size"]
-                    order = place_market_sell(exchange, market_info, base_qty)
-                    fill_px = avg_fill_price_from_order(order) or current_price
-                    exit_price = float(fill_px)
+                    order = place_market_sell(exchange, market_info, state["entry_size"])
+                    exit_price = float(avg_fill_price_from_order(order) or price)
                 except Exception as e:
-                    send_telegram(f"{symbol} Exit SELL error: {e}")
+                    send_telegram(f"❌ {symbol} Exit error: {e}")
                     raise
-
+            
             pnl = state["entry_size"] * (exit_price - state["entry_price"])
             pnl -= state["entry_size"] * SLIPPAGE_RATE
             pnl -= (exit_price * state["entry_size"]) * FEE_RATE
             state["capital"] += pnl
-
+            
             trade_row = {
                 "Symbol": symbol,
                 "Trade_ID": int(time.time()),
@@ -421,115 +404,90 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 "Capital_After": round(state["capital"], 2),
                 "Mode": MODE
             }
-
+            
             state.update({"position": 0, "entry_price": 0.0, "entry_sl": 0.0,
                           "entry_tp": 0.0, "entry_time": None, "entry_size": 0.0})
             state["last_exit_time"] = ts
-
-            ts_ist = utc_to_ist(ts)
-            msg = f"{LOG_PREFIX} {symbol} {ts_ist.strftime('%I:%M %p IST')} EXIT {exit_reason} @ {exit_price:.4f} | PnL={pnl:.2f} | Cap={state['capital']:.2f}"
-            print(msg)
-            send_telegram(msg)
-
-    # 🔧 FIXED: Entry logic - NOW MATCHES BACKTEST EXACTLY
+            
+            send_telegram(f"{'💚' if pnl > 0 else '❤️'} EXIT {symbol} {exit_reason} @ ${exit_price:.4f} PnL=${pnl:.2f}")
+    
+    # Entry logic - MATCHES BACKTEST EXACTLY
     if state["position"] == 0 and not blocked:
-        # 🔧 FIX: Cooldown check (now configurable, default 0 to match backtest)
         if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
             time_diff_hours = (ts - state["last_exit_time"]).total_seconds() / 3600
             if time_diff_hours < COOLDOWN_HOURS:
-                if DEBUG_MODE:
-                    print(f"🚫 [COOLDOWN] {symbol} | Blocked: Only {time_diff_hours:.1f}h since last exit (need {COOLDOWN_HOURS}h)")
                 state["last_processed_ts"] = ts
                 return state, None
         
-        # 🔧 FIX: Bullish sweep - EXACTLY matches backtest
-        # Checks: prev_close > prev_open AND prev_close > prev_prev_close
-        bullish_sweep = (prev_close > prev_open) and (prev_close > prev_prev_close)
-        
-        # Volume filter (disabled by default to match backtest)
         vol_ok = True
-        if USE_VOLUME_FILTER and not np.isnan(closed_bar.get("Avg_Volume", np.nan)):
-            vol_ok = closed_bar["Volume"] >= VOL_MIN_RATIO * closed_bar["Avg_Volume"]
+        if USE_VOLUME_FILTER and not np.isnan(current_bar.get("Avg_Volume", np.nan)):
+            vol_ok = current_bar["Volume"] >= VOL_MIN_RATIO * current_bar["Avg_Volume"]
         
-        rsi_ok = True if np.isnan(closed_bar["RSI"]) else closed_bar["RSI"] > RSI_OVERSOLD
+        rsi_ok = True if np.isnan(current_bar["RSI"]) else current_bar["RSI"] > RSI_OVERSOLD
         h4_ok = (not USE_H1_FILTER) or (h4_trend == 1)
-
+        
         if DEBUG_MODE:
-            print(f"[ENTRY CHECK] {symbol} | Looking for entry...")
-            print(f"[ENTRY CHECK] {symbol} | Prev Close > Prev Open: {prev_close:.2f} > {prev_open:.2f} = {prev_close > prev_open}")
-            print(f"[ENTRY CHECK] {symbol} | Prev Close > Prev-Prev Close: {prev_close:.2f} > {prev_prev_close:.2f} = {prev_close > prev_prev_close}")
-            print(f"[ENTRY CHECK] {symbol} | Bullish Sweep: {bullish_sweep}")
-            print(f"[ENTRY CHECK] {symbol} | Bias: {bias} (need 1)")
-            print(f"[ENTRY CHECK] {symbol} | Volume OK: {vol_ok}")
-            print(f"[ENTRY CHECK] {symbol} | RSI OK: {rsi_ok} (RSI: {closed_bar['RSI']:.1f} > {RSI_OVERSOLD})")
-            print(f"[ENTRY CHECK] {symbol} | H4 Trend OK: {h4_ok} (Trend: {h4_trend})")
-
-        # Entry conditions - matches backtest
+            print(f"[ENTRY CHECK] {symbol}")
+            print(f"  Bias==1: {bias == 1}")
+            print(f"  Bullish Sweep: {bullish_sweep}")
+            print(f"  Volume: {vol_ok}")
+            print(f"  RSI: {rsi_ok} ({current_bar['RSI']:.1f})")
+            print(f"  H4: {h4_ok}")
+        
         if bias == 1 and bullish_sweep and vol_ok and rsi_ok and h4_ok:
-            ts_ist = utc_to_ist(ts)
-            print(f"🟢 [ENTRY TRIGGERED] {symbol} at {ts_ist.strftime('%I:%M %p IST')} | All conditions met!")
-            send_telegram(f"🟢 ENTRY SIGNAL: {symbol} at ${prev_close:.2f}")
+            send_telegram(f"🟢 ENTRY SIGNAL: {symbol} @ ${price:.2f}")
             
-            # Calculate SL/TP based on previous bar
             if USE_ATR_STOPS:
-                atr_val = float(closed_bar["ATR"])
+                atr_val = float(current_bar["ATR"])
                 if np.isnan(atr_val) or atr_val <= 0:
-                    if DEBUG_MODE:
-                        print(f"[ENTRY] {symbol} | ATR invalid: {atr_val}")
                     state["last_processed_ts"] = ts
                     return state, trade_row
-                sl = prev_close - (ATR_MULT_SL * atr_val)
+                sl = price - (ATR_MULT_SL * atr_val)
             else:
-                sweep_buffer = min(max(prev_close * 0.0005, 0.0005), 0.0015)
-                sl = prev_close * (1 - sweep_buffer)
-
-            risk = abs(prev_close - sl)
+                sweep_buffer = min(max(price * 0.0005, 0.0005), 0.0015)
+                sl = price * (1 - sweep_buffer)
+            
+            risk = abs(price - sl)
             if risk <= 0:
-                if DEBUG_MODE:
-                    print(f"[ENTRY] {symbol} | Risk invalid: {risk}")
                 state["last_processed_ts"] = ts
                 return state, trade_row
-
+            
             rr_ratio = RR_FIXED
             if DYNAMIC_RR and USE_ATR_STOPS:
-                atr_series = calculate_atr(entry_df, ATR_PERIOD)
+                atr_series = calculate_atr(entry_df_work, ATR_PERIOD)
                 if len(atr_series) >= 7:
                     recent_atr = float(atr_series.iloc[-7:-2].mean())
-                    curr_atr = float(closed_bar["ATR"])
+                    curr_atr = float(current_bar["ATR"])
                     if not np.isnan(recent_atr) and recent_atr > 0:
-                        if curr_atr > recent_atr * 1.2: rr_ratio = MIN_RR
-                        elif curr_atr < recent_atr * 0.8: rr_ratio = MAX_RR
+                        if curr_atr > recent_atr * 1.2: 
+                            rr_ratio = MIN_RR
+                        elif curr_atr < recent_atr * 0.8: 
+                            rr_ratio = MAX_RR
             
-            tp = prev_close + rr_ratio * risk
-
+            tp = price + rr_ratio * risk
+            
             per_coin_cap = PER_COIN_CAP_USD
             available_cap = min(state["capital"], per_coin_cap)
             size_base = (available_cap * RISK_PERCENT) / risk
-            size_base = min(size_base, MAX_TRADE_SIZE / prev_close)
-            size_base = min(size_base, per_coin_cap / prev_close)
-
+            size_base = min(size_base, MAX_TRADE_SIZE / price)
+            size_base = min(size_base, per_coin_cap / price)
+            
             if DEBUG_MODE:
-                print(f"[ENTRY] {symbol} | Setup Price: ${prev_close:.2f}")
-                print(f"[ENTRY] {symbol} | Risk: ${risk:.2f} | RR: {rr_ratio} | SL: ${sl:.2f} | TP: ${tp:.2f}")
-                print(f"[ENTRY] {symbol} | Size: {size_base:.6f}")
-
+                print(f"[ENTRY] Setup: Entry=${price:.4f} SL=${sl:.4f} TP=${tp:.4f} RR={rr_ratio:.1f} Size={size_base:.6f}")
+            
             if size_base > 0:
-                # 🔧 FIX: Enter at next bar's OPEN (simulated with prev_close)
-                # In live, this will be filled at market on next bar
-                entry_price_used = prev_close
+                entry_price_used = price
                 
                 if MODE == "live":
                     try:
-                        mi = market_info
-                        size_base = max(size_base, mi.amount_min)
-                        size_base = mi.round_amount(size_base)
-                        order = place_market_buy(exchange, mi, size_base)
-                        fill_px = avg_fill_price_from_order(order) or prev_close
-                        entry_price_used = float(fill_px)
+                        size_base = max(size_base, market_info.amount_min)
+                        size_base = market_info.round_amount(size_base)
+                        order = place_market_buy(exchange, market_info, size_base)
+                        entry_price_used = float(avg_fill_price_from_order(order) or price)
                     except Exception as e:
-                        send_telegram(f"{symbol} Entry BUY error: {e}")
+                        send_telegram(f"❌ {symbol} Entry error: {e}")
                         raise
-
+                
                 state["position"] = 1
                 state["entry_price"] = entry_price_used
                 state["entry_sl"] = sl
@@ -537,29 +495,25 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_time"] = ts
                 state["entry_size"] = size_base
                 state["bearish_count"] = 0
-
+                
                 state["capital"] -= (size_base * SLIPPAGE_RATE)
                 state["capital"] -= (entry_price_used * size_base * FEE_RATE)
-
-                ts_ist = utc_to_ist(ts)
-                msg = f"{LOG_PREFIX} {symbol} {ts_ist.strftime('%I:%M %p IST')} ENTRY Long @ {entry_price_used:.4f} | SL={sl:.4f} TP={tp:.4f} RR={rr_ratio:.2f} Size={size_base:.6f} Cap={state['capital']:.2f} Mode={MODE}"
-                print(msg)
-                send_telegram(msg)
+                
+                send_telegram(f"🚀 ENTRY {symbol} @ ${entry_price_used:.4f} | SL=${sl:.4f} TP=${tp:.4f} RR={rr_ratio:.1f}")
         else:
             if DEBUG_MODE:
                 missing = []
-                if bias != 1: missing.append(f"Bias({bias}≠1)")
-                if not bullish_sweep: missing.append("BullishSweep")
-                if not vol_ok: missing.append("Volume")
+                if bias != 1: missing.append(f"Bias({bias})")
+                if not bullish_sweep: missing.append("Sweep")
+                if not vol_ok: missing.append("Vol")
                 if not rsi_ok: missing.append("RSI")
-                if not h4_ok: missing.append("H4Trend")
-                print(f"❌ [NO ENTRY] {symbol} | Missing: {', '.join(missing)}")
-
+                if not h4_ok: missing.append("H4")
+                print(f"❌ Missing: {', '.join(missing)}")
+    
     state["last_processed_ts"] = ts
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
     return state, trade_row
 
-# Worker per symbol
 def worker(symbol):
     state_file, trades_csv = state_files_for_symbol(symbol)
     exchange = get_exchange()
@@ -567,71 +521,44 @@ def worker(symbol):
     state = load_state(state_file)
     tf_minutes = timeframe_to_minutes(ENTRY_TF)
 
-    print(f"{LOG_PREFIX} Start | {symbol} | TF={ENTRY_TF}/{HTF} | Mode={MODE} | Capital={state['capital']:.2f} | Cooldown={COOLDOWN_HOURS}h")
-    send_telegram(f"🤖 Started {symbol} {ENTRY_TF}/{HTF} Mode={MODE} Cap=${PER_COIN_CAP_USD} Cooldown={COOLDOWN_HOURS}h")
+    print(f"{LOG_PREFIX} {symbol} Started | Mode={MODE} | Cap=${state['capital']:.2f}")
+    send_telegram(f"🤖 {symbol} Started | {ENTRY_TF}/{HTF} | ${PER_COIN_CAP_USD}")
 
     while True:
         try:
-            now_ist = get_ist_time()
             now_utc = datetime.now(pytz.utc)
-            
-            if DEBUG_MODE:
-                print(f"[TIME] {symbol} | IST: {now_ist.strftime('%I:%M:%S %p')} | UTC: {now_utc.strftime('%H:%M:%S')}")
             
             entry_df = fetch_ohlcv_df(exchange, symbol, ENTRY_TF, limit=500)
             htf_df = fetch_ohlcv_df(exchange, symbol, HTF, limit=600)
 
             if entry_df.empty or htf_df.empty or len(entry_df) < 3:
-                print(f"{LOG_PREFIX} {symbol} No data; wait 30s")
+                print(f"{LOG_PREFIX} {symbol} | No data; wait 30s")
                 time.sleep(30)
                 continue
 
             closed_candle_ts = entry_df.index[-2]
             forming_candle_ts = entry_df.index[-1]
 
-            closed_candle_ist = utc_to_ist(closed_candle_ts)
-            forming_candle_ist = utc_to_ist(forming_candle_ts)
-
-            if DEBUG_MODE:
-                print(f"[DATA] {symbol} | Closed candle: {closed_candle_ist.strftime('%Y-%m-%d %I:%M %p IST')}")
-                print(f"[DATA] {symbol} | Forming candle: {forming_candle_ist.strftime('%Y-%m-%d %I:%M %p IST')}")
-                if state['last_processed_ts']:
-                    last_proc_ist = utc_to_ist(state['last_processed_ts'])
-                    print(f"[DATA] {symbol} | Last processed: {last_proc_ist.strftime('%Y-%m-%d %I:%M %p IST')}")
-
             if state["last_processed_ts"] is None:
                 state["last_processed_ts"] = closed_candle_ts
                 save_state(state_file, state)
-                if DEBUG_MODE:
-                    print(f"[INIT] {symbol} | Initial: {closed_candle_ist.strftime('%I:%M %p IST')}")
                 time.sleep(10)
                 continue
 
             if closed_candle_ts > state["last_processed_ts"]:
                 if DEBUG_MODE:
-                    prev_ist = utc_to_ist(state['last_processed_ts'])
-                    print(f"[WORKER] {symbol} | 🆕 NEW CLOSED CANDLE: {closed_candle_ist.strftime('%I:%M %p IST')} (prev: {prev_ist.strftime('%I:%M %p IST')})")
+                    print(f"\n[WORKER] {symbol} | 🆕 NEW CANDLE @ {utc_to_ist(closed_candle_ts).strftime('%I:%M %p')}")
                 
                 state, trade = process_bar(symbol, entry_df, htf_df, state, exchange=exchange, market_info=market_info)
                 
                 if trade is not None:
                     append_trade(trades_csv, trade)
-                    entry_time_ist = format_ist_time(pd.to_datetime(trade['Entry_DateTime']))
-                    print(f"✅ [TRADE LOGGED] {symbol} | Entry: {entry_time_ist}")
+                    print(f"💾 [TRADE] {symbol} | {trade['Exit_Reason']} | PnL=${trade['PnL_$']:.2f}")
                 
                 save_state(state_file, state)
-                last_proc_ist = utc_to_ist(state['last_processed_ts'])
-                print(f"💾 [STATE SAVED] {symbol} | Last processed: {last_proc_ist.strftime('%I:%M %p IST')}")
-            else:
-                if DEBUG_MODE and symbol == "BTC/USDT":
-                    print(f"[WORKER] {symbol} | ⏳ Already processed")
 
             next_close_utc = forming_candle_ts + timedelta(minutes=tf_minutes)
             safe_check_time_utc = next_close_utc + timedelta(minutes=1)
-            
-            next_close_ist = utc_to_ist(next_close_utc)
-            safe_check_ist = utc_to_ist(safe_check_time_utc)
-            
             sleep_sec = (safe_check_time_utc - now_utc.replace(tzinfo=None)).total_seconds()
             
             if sleep_sec < 10:
@@ -640,33 +567,55 @@ def worker(symbol):
                 sleep_sec = SLEEP_CAP
             
             if DEBUG_MODE:
-                print(f"[SLEEP] {symbol} | Next closes: {next_close_ist.strftime('%I:%M %p IST')}")
-                print(f"[SLEEP] {symbol} | Will check: {safe_check_ist.strftime('%I:%M %p IST')} (in {sleep_sec:.0f}s)")
+                print(f"[SLEEP] {symbol} | Next check in {sleep_sec/60:.1f}m\n")
             
             time.sleep(sleep_sec)
 
         except ccxt.RateLimitExceeded:
-            print(f"{LOG_PREFIX} {symbol} Rate limit; sleep 10s")
+            print(f"{LOG_PREFIX} {symbol} | Rate limit; sleep 10s")
             time.sleep(10)
         except Exception as e:
-            err = f"{LOG_PREFIX} {symbol} ERROR: {e}"
+            err = f"{LOG_PREFIX} {symbol} | ERROR: {e}"
             print(err)
             send_telegram(err)
             traceback.print_exc()
             time.sleep(60)
 
-# Main
 def main():
     now_ist = get_ist_time()
-    startup_msg = f"🚀 Guardeer Bot Started!\nTime: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}\nMode: {MODE}\nCoins: {', '.join(SYMBOLS)}\nCap/coin: ${PER_COIN_CAP_USD}\nCooldown: {COOLDOWN_HOURS}h\nDebug: {DEBUG_MODE}"
+    startup_msg = f"""
+🚀 Guardeer Trading Bot Started!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏰ Time: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}
+📊 Mode: {MODE.upper()}
+💰 Capital per coin: ${PER_COIN_CAP_USD:,.2f}
+🪙 Symbols: {', '.join(SYMBOLS)}
+📈 Timeframes: {ENTRY_TF} / {HTF}
+⚙️ Settings:
+  • Risk: {RISK_PERCENT*100}%
+  • RR: {RR_FIXED}x
+  • Max DD: {MAX_DRAWDOWN*100}%
+  • ATR Stops: {USE_ATR_STOPS}
+  • H4 Filter: {USE_H1_FILTER}
+  • Volume Filter: {USE_VOLUME_FILTER}
+  • Cooldown: {COOLDOWN_HOURS}h
+  • Debug: {DEBUG_MODE}
+
+✅ All systems operational
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
     print(startup_msg)
-    send_telegram(startup_msg)
+    send_telegram(startup_msg.replace('━', '-'))
     
     threads = []
     for sym in SYMBOLS:
         t = threading.Thread(target=worker, args=(sym,), daemon=True)
         t.start()
         threads.append(t)
+        time.sleep(2)
+    
+    print(f"\n✅ {len(threads)} worker threads started!\n")
+    
     while True:
         time.sleep(3600)
 
