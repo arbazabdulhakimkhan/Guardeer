@@ -466,11 +466,11 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             
             tp = price + rr_ratio * risk
             
-            per_coin_cap = PER_COIN_CAP_USD
-            available_cap = min(state["capital"], per_coin_cap)
-            size_base = (available_cap * RISK_PERCENT) / risk
-            size_base = min(size_base, MAX_TRADE_SIZE / price)
-            size_base = min(size_base, per_coin_cap / price)
+            # ✅ FIXED: Position sizing now matches backtest exactly
+            # Uses current capital, not capped allocation
+            # Only applies MAX_TRADE_SIZE limit (in base units)
+            size_base = (state["capital"] * RISK_PERCENT) / risk
+            size_base = min(size_base, MAX_TRADE_SIZE)
             
             if DEBUG_MODE:
                 print(f"[ENTRY] Setup: Entry=${price:.4f} SL=${sl:.4f} TP=${tp:.4f} RR={rr_ratio:.1f} Size={size_base:.6f}")
