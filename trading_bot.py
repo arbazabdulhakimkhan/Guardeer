@@ -755,7 +755,7 @@ Exit Reason: {trade['Exit_Reason']}
 def main():
     now_ist = get_ist_time()
     startup_msg = f"""
-🚀 Guardeer Trading Bot Started! (Enhanced Tracking)
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⏰ Time: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}
 📊 Mode: {MODE.upper()}
@@ -856,5 +856,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
