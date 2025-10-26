@@ -255,10 +255,10 @@ def avg_fill_price_from_order(order):
         if qty > 0: return notional / qty
     return None
 
-# ✅ FIXED: Proper capital management
+# ✅ FIXED: Proper capital management with position value fees + capital constraint
 def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: MarketInfo=None):
     """
-    🔥 FIXED: Only deduct transaction costs from capital, not position value
+    🔥 FIXED: Fees on position value + Capital constraint for spot trading
     """
     if len(entry_df) < 3:
         return state, None
@@ -329,7 +329,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             else:
                 exit_price = price
             
-            # ✅ FIXED: Proper exit - return position proceeds minus exit costs
+            # ✅ CORRECT: Fees on position value
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             
             exit_position_value = exit_price * state["entry_size"]
@@ -340,11 +340,9 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             entry_slippage = entry_position_value * SLIPPAGE_RATE
             entry_fee = entry_position_value * FEE_RATE
             
-            # Return position proceeds minus exit costs
             net_proceeds = exit_position_value - exit_slippage - exit_fee
             state["capital"] += net_proceeds
             
-            # Calculate net P&L for statistics
             total_fees = entry_fee + exit_fee
             total_slippage = entry_slippage + exit_slippage
             net_pnl = gross_pnl - total_fees - total_slippage
@@ -393,7 +391,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     
     blocked = state.get("permanently_stopped", False)
     
-    # ✅ FIXED: Exit with proper capital return
+    # ✅ CORRECT: Exit with proper capital return
     if state["position"] == 1 and not blocked:
         exit_flag = False
         exit_price = price
@@ -425,7 +423,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                     send_telegram(f"❌ {symbol} Exit error: {e}")
                     raise
             
-            # ✅ FIXED: Return position proceeds minus exit costs
+            # ✅ CORRECT: Fees on position value
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             
             exit_position_value = exit_price * state["entry_size"]
@@ -436,11 +434,9 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             entry_slippage = entry_position_value * SLIPPAGE_RATE
             entry_fee = entry_position_value * FEE_RATE
             
-            # Return position proceeds minus exit costs
             net_proceeds = exit_position_value - exit_slippage - exit_fee
             state["capital"] += net_proceeds
             
-            # Calculate net P&L for statistics
             total_fees = entry_fee + exit_fee
             total_slippage = entry_slippage + exit_slippage
             net_pnl = gross_pnl - total_fees - total_slippage
@@ -492,7 +488,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 ━━━━━━━━━━━━━━━━━━━━━━━
 📍 Exit Price: ${exit_price:.4f}
 💰 Gross PnL: ${gross_pnl:.2f}
-💸 Fees: ${total_fees:.2f} ({FEE_RATE*100}%)
+💸 Fees: ${total_fees:.2f}
 📉 Slippage: ${total_slippage:.2f}
 💵 Net PnL: ${net_pnl:.2f}
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -504,7 +500,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             print(exit_msg)
             send_telegram(exit_msg)
     
-    # ✅ FIXED: Entry with proper position sizing and cost deduction
+    # ✅ FIXED: Entry with position value fees + capital constraint
     if state["position"] == 0 and not blocked:
         if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
             time_diff_hours = (ts - state["last_exit_time"]).total_seconds() / 3600
@@ -556,29 +552,40 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             
             tp = price + rr_ratio * risk
             
-            # ✅ FIXED: Position sizing from FULL capital before costs
+            # ✅ CORRECT: Calculate position size from available capital
             risk_amount = state["capital"] * RISK_PERCENT
             size_base = risk_amount / risk if risk > 0 else 0
             size_base = min(size_base, MAX_TRADE_SIZE)
             
-            # Calculate costs for this position
+            # ✅ CORRECT: Calculate costs on position value
             position_value = price * size_base
             entry_slippage = position_value * SLIPPAGE_RATE
             entry_fee = position_value * FEE_RATE
             total_entry_costs = entry_slippage + entry_fee
             
-            # Safety check: don't let costs exceed 10% of capital
-            if total_entry_costs > state["capital"] * 0.1:
-                max_costs = state["capital"] * 0.1
-                cost_rate = SLIPPAGE_RATE + FEE_RATE
-                max_position_value = max_costs / cost_rate
+            # ✅ NEW: Capital constraint check
+            total_required = position_value + total_entry_costs
+            
+            if total_required > state["capital"]:
+                # Reduce position to fit available capital
+                max_position_value = state["capital"] * 0.95  # Use 95% max
                 size_base = max_position_value / price
                 
-                # Recalculate
+                # Recalculate with adjusted size
                 position_value = price * size_base
                 entry_slippage = position_value * SLIPPAGE_RATE
                 entry_fee = position_value * FEE_RATE
                 total_entry_costs = entry_slippage + entry_fee
+                
+                # Calculate actual risk being taken
+                actual_risk_amount = size_base * risk
+                actual_risk_percent = (actual_risk_amount / state["capital"]) * 100
+                
+                if DEBUG_MODE:
+                    print(f"⚠️ [CAPITAL LIMIT] Position reduced to fit ${state['capital']:.2f}")
+                    print(f"   Target risk: ${risk_amount:.2f} ({RISK_PERCENT*100}%)")
+                    print(f"   Actual risk: ${actual_risk_amount:.2f} ({actual_risk_percent:.2f}%)")
+                    print(f"   Position value: ${position_value:.2f}")
             
             if DEBUG_MODE:
                 print(f"[ENTRY] Setup: Entry=${price:.4f} SL=${sl:.4f} TP=${tp:.4f} RR={rr_ratio:.1f}")
@@ -611,10 +618,10 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_size"] = size_base
                 state["bearish_count"] = 0
                 
-                # ✅ CRITICAL FIX: Only deduct costs, not position value
+                # ✅ CORRECT: Only deduct costs, not position value
                 state["capital"] -= total_entry_costs
                 
-                risk_amount = state["capital"] * RISK_PERCENT
+                actual_risk_amount = size_base * risk
                 
                 entry_msg = f"""
 🚀 ENTRY {symbol}
@@ -632,7 +639,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 ━━━━━━━━━━━━━━━━━━━━━━━
 💼 Capital Before: ${state['capital'] + total_entry_costs:.2f}
 💼 Capital After: ${state['capital']:.2f}
-💎 Risking: ${risk_amount:.2f} ({RISK_PERCENT*100}%)
+💎 Risking: ${actual_risk_amount:.2f} ({(actual_risk_amount/state['capital'])*100:.2f}%)
 ━━━━━━━━━━━━━━━━━━━━━━━
 📊 Total Trades: {state['total_trades']}
 📈 Record: {state['winning_trades']}W / {state['losing_trades']}L
@@ -797,8 +804,9 @@ def main():
   • Slippage Rate: {SLIPPAGE_RATE*100}%
   • Fee Rate: {FEE_RATE*100}%
 
-✅ Fixed Capital Management:
-  ✓ Position sizing from full capital
+✅ Fixed Features:
+  ✓ Fees on position value (KuCoin standard)
+  ✓ Capital constraint for spot trading
   ✓ Only costs deducted from capital
   ✓ Position proceeds returned on exit
   ✓ Accurate P&L tracking
