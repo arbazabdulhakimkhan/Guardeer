@@ -331,16 +331,23 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             else:
                 exit_price = price
             
-            # ✅ ENHANCED: Detailed fee & slippage calculation
+            # ✅ FIXED: Standard trading cost calculation (position value based)
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
-            entry_slippage = state["entry_size"] * SLIPPAGE_RATE
-            exit_slippage = state["entry_size"] * SLIPPAGE_RATE
-            entry_fee = (state["entry_price"] * state["entry_size"]) * FEE_RATE
-            exit_fee = (exit_price * state["entry_size"]) * FEE_RATE
             
-            total_fees = entry_fee + exit_fee
-            total_slippage = entry_slippage + exit_slippage
-            net_pnl = gross_pnl - total_fees - total_slippage
+            # Exit costs (calculated on position value at exit)
+            position_value_at_exit = exit_price * state["entry_size"]
+            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
+            exit_fee = position_value_at_exit * FEE_RATE
+            
+            # Entry costs (for reporting only - already deducted at entry)
+            position_value_at_entry = state["entry_price"] * state["entry_size"]
+            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
+            entry_fee = position_value_at_entry * FEE_RATE
+            
+            # Net PnL = Gross PnL - EXIT costs only
+            total_fees = entry_fee + exit_fee  # For reporting
+            total_slippage = entry_slippage + exit_slippage  # For reporting
+            net_pnl = gross_pnl - exit_slippage - exit_fee  # Only deduct exit costs!
             
             state["capital"] += net_pnl
             state["total_trades"] += 1
@@ -419,16 +426,23 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                     send_telegram(f"❌ {symbol} Exit error: {e}")
                     raise
             
-            # ✅ ENHANCED: Detailed fee & slippage breakdown
+            # ✅ FIXED: Standard trading cost calculation (position value based)
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
-            entry_slippage = state["entry_size"] * SLIPPAGE_RATE
-            exit_slippage = state["entry_size"] * SLIPPAGE_RATE
-            entry_fee = (state["entry_price"] * state["entry_size"]) * FEE_RATE
-            exit_fee = (exit_price * state["entry_size"]) * FEE_RATE
             
-            total_fees = entry_fee + exit_fee
-            total_slippage = entry_slippage + exit_slippage
-            net_pnl = gross_pnl - total_fees - total_slippage
+            # Exit costs (calculated on position value at exit)
+            position_value_at_exit = exit_price * state["entry_size"]
+            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
+            exit_fee = position_value_at_exit * FEE_RATE
+            
+            # Entry costs (for reporting only - already deducted at entry)
+            position_value_at_entry = state["entry_price"] * state["entry_size"]
+            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
+            entry_fee = position_value_at_entry * FEE_RATE
+            
+            # Net PnL = Gross PnL - EXIT costs only
+            total_fees = entry_fee + exit_fee  # For reporting
+            total_slippage = entry_slippage + exit_slippage  # For reporting
+            net_pnl = gross_pnl - exit_slippage - exit_fee  # Only deduct exit costs!
             
             state["capital"] += net_pnl
             state["total_trades"] += 1
@@ -568,9 +582,10 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_size"] = size_base
                 state["bearish_count"] = 0
                 
-                # ✅ ENHANCED: Calculate and deduct entry costs
-                entry_slippage = (size_base * SLIPPAGE_RATE)
-                entry_fee = (entry_price_used * size_base * FEE_RATE)
+                # ✅ FIXED: Standard trading cost calculation (position value based)
+                position_value = entry_price_used * size_base
+                entry_slippage = position_value * SLIPPAGE_RATE
+                entry_fee = position_value * FEE_RATE
                 entry_costs = entry_slippage + entry_fee
                 
                 state["capital"] -= entry_costs
@@ -686,13 +701,13 @@ Exit:  {format_ist_time(pd.to_datetime(trade['Exit_DateTime']))}
   Take Profit: ${trade['Take_Profit']:.4f}
 
 💵 P&L BREAKDOWN:
-  Gross PnL:       ${trade['Gross_PnL_$']:.2f}
-  Entry Fee:       ${trade['Entry_Fee_$']:.2f}
-  Exit Fee:        ${trade['Exit_Fee_$']:.2f}
-  Entry Slippage:  ${trade['Entry_Slippage_$']:.2f}
-  Exit Slippage:   ${trade['Exit_Slippage_$']:.2f}
+  Gross PnL:       ${trade['Gross_PnL_]:.2f}
+  Entry Fee:      -${trade['Entry_Fee_]:.2f}
+  Exit Fee:       -${trade['Exit_Fee_]:.2f}
+  Entry Slippage: -${trade['Entry_Slippage_]:.2f}
+  Exit Slippage:  -${trade['Exit_Slippage_]:.2f}
   ─────────────────────────────
-  Net PnL:         ${trade['Net_PnL_$']:.2f} {'✅ WIN' if trade['Win'] else '❌ LOSS'}
+  Net PnL:         ${trade['Net_PnL_]:.2f} {'✅ WIN' if trade['Win'] else '❌ LOSS'}
 
 📊 STATISTICS ({symbol}):
   Total Trades: {state['total_trades']}
@@ -842,5 +857,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
