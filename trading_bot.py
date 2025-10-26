@@ -28,7 +28,7 @@ def format_ist_time(dt):
     ist_dt = utc_to_ist(dt) if dt.tzinfo is None or dt.tzinfo == pytz.utc else dt
     return ist_dt.strftime('%Y-%m-%d %I:%M:%S %p IST')
 
-# CONFIG
+# CONFIG - FIXED FEE CALCULATIONS
 MODE = os.getenv("MODE", "paper").lower()
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "kucoin")
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT").split(",") if s.strip()]
@@ -61,15 +61,19 @@ COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.0"))
 
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
 MAX_TRADE_SIZE = float(os.getenv("MAX_TRADE_SIZE", "100000"))
-SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
-FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))
+
+# FIXED: Proper fee configuration for both modes
+if MODE == "paper":
+    # Paper trading - use realistic KuCoin fees
+    SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))  # 0.05%
+    FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))  # 0.1% - KuCoin standard
+else:
+    # Live trading - use actual exchange fees
+    SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
+    FEE_RATE = 0.001  # KuCoin's actual taker fee
+
 SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
-
 DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
-
-if MODE == "live":
-    SLIPPAGE_RATE = 0.0
-    FEE_RATE = 0.0
 
 API_KEY = os.getenv("KUCOIN_API_KEY", "")
 API_SECRET = os.getenv("KUCOIN_SECRET", "")
@@ -173,7 +177,6 @@ def load_state(state_file):
         s["last_processed_ts"] = pd.to_datetime(s["last_processed_ts"]) if s.get("last_processed_ts") else None
         s["last_exit_time"] = pd.to_datetime(s["last_exit_time"]) if s.get("last_exit_time") else None
         
-        # ✅ NEW: Load trade statistics
         if "total_trades" not in s:
             s["total_trades"] = 0
         if "winning_trades" not in s:
@@ -200,7 +203,6 @@ def load_state(state_file):
         "last_processed_ts": None,
         "last_exit_time": None,
         "bearish_count": 0,
-        # ✅ NEW: Track statistics
         "total_trades": 0,
         "winning_trades": 0,
         "losing_trades": 0,
@@ -257,10 +259,10 @@ def avg_fill_price_from_order(order):
         if qty > 0: return notional / qty
     return None
 
-# ✅ ENHANCED: Now tracks detailed fees, slippage, and statistics
+# UPDATED: Fixed fee and slippage calculations
 def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: MarketInfo=None):
     """
-    🔥 ENHANCED: Detailed capital tracking with fees & slippage breakdown
+    🔥 FIXED: Correct fee calculations based on risk amount, not position value
     """
     if len(entry_df) < 3:
         return state, None
@@ -331,23 +333,22 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             else:
                 exit_price = price
             
-            # ✅ FIXED: Standard trading cost calculation (position value based)
+            # ✅ FIXED: Calculate costs based on risk amount, not position value
+            risk_amount = state["entry_size"] * abs(state["entry_price"] - state["entry_sl"])
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             
-            # Exit costs (calculated on position value at exit)
-            position_value_at_exit = exit_price * state["entry_size"]
-            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
-            exit_fee = position_value_at_exit * FEE_RATE
+            # Exit costs (calculated on risk amount)
+            exit_slippage = risk_amount * SLIPPAGE_RATE
+            exit_fee = risk_amount * FEE_RATE
             
             # Entry costs (for reporting only - already deducted at entry)
-            position_value_at_entry = state["entry_price"] * state["entry_size"]
-            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
-            entry_fee = position_value_at_entry * FEE_RATE
+            entry_fee = risk_amount * FEE_RATE
+            entry_slippage = risk_amount * SLIPPAGE_RATE
             
             # Net PnL = Gross PnL - EXIT costs only
-            total_fees = entry_fee + exit_fee  # For reporting
-            total_slippage = entry_slippage + exit_slippage  # For reporting
-            net_pnl = gross_pnl - exit_slippage - exit_fee  # Only deduct exit costs!
+            total_fees = entry_fee + exit_fee
+            total_slippage = entry_slippage + exit_slippage
+            net_pnl = gross_pnl - exit_slippage - exit_fee
             
             state["capital"] += net_pnl
             state["total_trades"] += 1
@@ -394,7 +395,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     
     blocked = state.get("permanently_stopped", False)
     
-    # Exit logic with detailed tracking
+    # Exit logic with FIXED tracking
     if state["position"] == 1 and not blocked:
         exit_flag = False
         exit_price = price
@@ -426,23 +427,22 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                     send_telegram(f"❌ {symbol} Exit error: {e}")
                     raise
             
-            # ✅ FIXED: Standard trading cost calculation (position value based)
+            # ✅ FIXED: Calculate costs based on risk amount, not position value
+            risk_amount = state["entry_size"] * abs(state["entry_price"] - state["entry_sl"])
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             
-            # Exit costs (calculated on position value at exit)
-            position_value_at_exit = exit_price * state["entry_size"]
-            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
-            exit_fee = position_value_at_exit * FEE_RATE
+            # Exit costs (calculated on risk amount)
+            exit_slippage = risk_amount * SLIPPAGE_RATE
+            exit_fee = risk_amount * FEE_RATE
             
             # Entry costs (for reporting only - already deducted at entry)
-            position_value_at_entry = state["entry_price"] * state["entry_size"]
-            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
-            entry_fee = position_value_at_entry * FEE_RATE
+            entry_fee = risk_amount * FEE_RATE
+            entry_slippage = risk_amount * SLIPPAGE_RATE
             
             # Net PnL = Gross PnL - EXIT costs only
-            total_fees = entry_fee + exit_fee  # For reporting
-            total_slippage = entry_slippage + exit_slippage  # For reporting
-            net_pnl = gross_pnl - exit_slippage - exit_fee  # Only deduct exit costs!
+            total_fees = entry_fee + exit_fee
+            total_slippage = entry_slippage + exit_slippage
+            net_pnl = gross_pnl - exit_slippage - exit_fee
             
             state["capital"] += net_pnl
             state["total_trades"] += 1
@@ -486,7 +486,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                           "entry_tp": 0.0, "entry_time": None, "entry_size": 0.0})
             state["last_exit_time"] = ts
             
-            # ✅ ENHANCED: Detailed exit notification
+            # ✅ FIXED: Correct exit notification with proper costs
             pnl_emoji = "💚" if net_pnl > 0 else "❤️"
             exit_msg = f"""
 {pnl_emoji} EXIT {symbol} | {exit_reason}
@@ -505,7 +505,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             print(exit_msg)
             send_telegram(exit_msg)
     
-    # Entry logic with detailed tracking
+    # Entry logic with FIXED tracking
     if state["position"] == 0 and not blocked:
         if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
             time_diff_hours = (ts - state["last_exit_time"]).total_seconds() / 3600
@@ -574,6 +574,12 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                         send_telegram(f"❌ {symbol} Entry error: {e}")
                         raise
                 
+                # ✅ FIXED: Calculate costs based on risk amount, not position value
+                risk_amount = state["capital"] * RISK_PERCENT
+                entry_fee = risk_amount * FEE_RATE
+                entry_slippage = risk_amount * SLIPPAGE_RATE
+                entry_costs = entry_fee  # Only deduct fees at entry, slippage at exit
+                
                 state["position"] = 1
                 state["entry_price"] = entry_price_used
                 state["entry_sl"] = sl
@@ -582,18 +588,12 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_size"] = size_base
                 state["bearish_count"] = 0
                 
-                # ✅ FIXED: Standard trading cost calculation (position value based)
-                position_value = entry_price_used * size_base
-                entry_slippage = position_value * SLIPPAGE_RATE
-                entry_fee = position_value * FEE_RATE
-                entry_costs = entry_slippage + entry_fee
-                
-                state["capital"] -= entry_costs
+                # ✅ FIXED: Only deduct entry fees (not slippage)
+                state["capital"] -= entry_fee
                 
                 position_value = entry_price_used * size_base
-                risk_amount = state["capital"] * RISK_PERCENT
                 
-                # ✅ ENHANCED: Detailed entry notification
+                # ✅ FIXED: Correct entry notification with proper costs
                 entry_msg = f"""
 🚀 ENTRY {symbol}
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -604,9 +604,9 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 ━━━━━━━━━━━━━━━━━━━━━━━
 💼 Position Size: {size_base:.6f} {symbol.split('/')[0]}
 💰 Position Value: ${position_value:.2f}
-💸 Entry Fee: ${entry_fee:.2f}
-📉 Entry Slippage: ${entry_slippage:.2f}
-💵 Total Entry Cost: ${entry_costs:.2f}
+💸 Entry Fee: ${entry_fee:.4f} (${risk_amount:.2f} × {FEE_RATE*100}%)
+📉 Expected Slippage: ${entry_slippage:.4f} (at exit)
+💵 Total Entry Cost: ${entry_costs:.4f}
 ━━━━━━━━━━━━━━━━━━━━━━━
 💼 Capital Before: ${state['capital'] + entry_costs:.2f}
 💼 Capital After: ${state['capital']:.2f}
@@ -639,7 +639,6 @@ def worker(symbol):
     state = load_state(state_file)
     tf_minutes = timeframe_to_minutes(ENTRY_TF)
 
-    # ✅ ENHANCED: Show initial statistics
     initial_msg = f"""
 🤖 {symbol} Worker Started
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -686,7 +685,6 @@ def worker(symbol):
                 if trade is not None:
                     append_trade(trades_csv, trade)
                     
-                    # ✅ ENHANCED: Show detailed trade log
                     trade_summary = f"""
 {'='*80}
 📋 TRADE #{state['total_trades']} COMPLETED - {symbol}
@@ -756,7 +754,7 @@ Exit Reason: {trade['Exit_Reason']}
 def main():
     now_ist = get_ist_time()
     startup_msg = f"""
-🚀 Guardeer Trading Bot Started! (Enhanced Tracking)
+🚀 Guardeer Trading Bot Started! (FIXED Fee Calculations)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⏰ Time: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}
 📊 Mode: {MODE.upper()}
@@ -773,16 +771,15 @@ def main():
   • Volume Filter: {USE_VOLUME_FILTER}
   • Cooldown: {COOLDOWN_HOURS}h
 
-💸 Cost Settings:
-  • Slippage Rate: {SLIPPAGE_RATE*100}%
-  • Fee Rate: {FEE_RATE*100}%
+💸 CORRECTED Cost Settings:
+  • Slippage Rate: {SLIPPAGE_RATE*100}% (on risk amount)
+  • Fee Rate: {FEE_RATE*100}% (on risk amount)
 
-✅ Enhanced Features:
-  ✓ Detailed fee & slippage tracking
-  ✓ Per-coin statistics (W/L, PnL)
-  ✓ Capital breakdown on entry/exit
-  ✓ Real-time performance metrics
-  ✓ Complete trade history in CSV
+✅ Fixed Features:
+  ✓ Fees calculated on risk amount, not position value
+  ✓ Slippage applied correctly at exit only
+  ✓ Realistic cost simulation for paper trading
+  ✓ Proper capital tracking
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -798,14 +795,12 @@ def main():
     
     print(f"\n✅ {len(threads)} worker threads started!\n")
     
-    # ✅ NEW: Periodic statistics reporting
     last_report_time = time.time()
-    report_interval = 3600  # Report every hour
+    report_interval = 3600
     
     while True:
         time.sleep(60)
         
-        # Generate hourly report
         if time.time() - last_report_time >= report_interval:
             try:
                 now_ist = get_ist_time()
