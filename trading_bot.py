@@ -724,7 +724,6 @@ Exit:  {format_ist_time(pd.to_datetime(trade['Exit_DateTime']))}
 
 Exit Reason: {trade['Exit_Reason']}
 {'='*80}
-"""
                     print(trade_summary)
                 
                 save_state(state_file, state)
@@ -857,4 +856,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
