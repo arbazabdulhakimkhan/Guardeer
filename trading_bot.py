@@ -28,7 +28,7 @@ def format_ist_time(dt):
     ist_dt = utc_to_ist(dt) if dt.tzinfo is None or dt.tzinfo == pytz.utc else dt
     return ist_dt.strftime('%Y-%m-%d %I:%M:%S %p IST')
 
-# CONFIG - MATCHING 242% BACKTEST EXACTLY
+# CONFIG
 MODE = os.getenv("MODE", "paper").lower()
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "kucoin")
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT").split(",") if s.strip()]
@@ -39,7 +39,6 @@ TOTAL_PORTFOLIO_CAPITAL = float(os.getenv("TOTAL_PORTFOLIO_CAPITAL", "10000"))
 PER_COIN_ALLOCATION = float(os.getenv("PER_COIN_ALLOCATION", "0.20"))
 PER_COIN_CAP_USD = TOTAL_PORTFOLIO_CAPITAL * PER_COIN_ALLOCATION
 
-# STRATEGY SETTINGS - MATCHING 242% BACKTEST
 RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.02"))
 RR_FIXED = float(os.getenv("RR_FIXED", "5.0"))
 DYNAMIC_RR = os.getenv("DYNAMIC_RR", "true").lower() == "true"
@@ -110,9 +109,6 @@ def timeframe_to_minutes(tf: str) -> int:
     if tf.endswith("d"): return int(tf[:-1]) * 1440
     raise ValueError(f"Unsupported timeframe: {tf}")
 
-def now_utc_naive():
-    return datetime.utcnow().replace(tzinfo=None)
-
 def get_exchange():
     if MODE == "live":
         ex = getattr(ccxt, EXCHANGE_ID)({
@@ -176,6 +172,21 @@ def load_state(state_file):
         s["entry_time"] = pd.to_datetime(s["entry_time"]) if s.get("entry_time") else None
         s["last_processed_ts"] = pd.to_datetime(s["last_processed_ts"]) if s.get("last_processed_ts") else None
         s["last_exit_time"] = pd.to_datetime(s["last_exit_time"]) if s.get("last_exit_time") else None
+        
+        # ✅ NEW: Load trade statistics
+        if "total_trades" not in s:
+            s["total_trades"] = 0
+        if "winning_trades" not in s:
+            s["winning_trades"] = 0
+        if "losing_trades" not in s:
+            s["losing_trades"] = 0
+        if "total_pnl" not in s:
+            s["total_pnl"] = 0.0
+        if "total_fees_paid" not in s:
+            s["total_fees_paid"] = 0.0
+        if "total_slippage_paid" not in s:
+            s["total_slippage_paid"] = 0.0
+        
         return s
     return {
         "capital": PER_COIN_CAP_USD,
@@ -188,7 +199,14 @@ def load_state(state_file):
         "peak_equity": PER_COIN_CAP_USD,
         "last_processed_ts": None,
         "last_exit_time": None,
-        "bearish_count": 0
+        "bearish_count": 0,
+        # ✅ NEW: Track statistics
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "total_fees_paid": 0.0,
+        "total_slippage_paid": 0.0
     }
 
 def save_state(state_file, state):
@@ -203,7 +221,6 @@ def append_trade(csv_file, row):
     write_header = not os.path.exists(csv_file)
     pd.DataFrame([row]).to_csv(csv_file, mode="a", header=write_header, index=False)
 
-# Precision
 class MarketInfo:
     def __init__(self, exchange, symbol):
         mkts = exchange.load_markets()
@@ -240,15 +257,14 @@ def avg_fill_price_from_order(order):
         if qty > 0: return notional / qty
     return None
 
-# ✅ UPDATED TO MATCH 242% BACKTEST EXACTLY
+# ✅ ENHANCED: Now tracks detailed fees, slippage, and statistics
 def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: MarketInfo=None):
     """
-    🔥 UPDATED VERSION - Now matches 242% backtest EXACTLY
+    🔥 ENHANCED: Detailed capital tracking with fees & slippage breakdown
     """
     if len(entry_df) < 3:
         return state, None
     
-    # Calculate indicators on FULL dataframe
     entry_df_work = entry_df.copy()
     entry_df_work["Bias"] = 0
     entry_df_work.loc[entry_df_work["Close"] > entry_df_work["Close"].shift(1), "Bias"] = 1
@@ -267,7 +283,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     
     entry_df_work["RSI"] = calculate_rsi(entry_df_work["Close"], RSI_PERIOD)
     
-    # Process CURRENT bar (most recent closed)
     i = len(entry_df_work) - 1
     current_bar = entry_df_work.iloc[i]
     ts = entry_df_work.index[i]
@@ -277,7 +292,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     bias = int(current_bar["Bias"])
     h4_trend = int(current_bar["H4_Trend"])
     
-    # Bullish sweep - EXACTLY like 242% backtest
     if i >= 1:
         prev_close = float(entry_df_work['Close'].iloc[i-1])
         bullish_sweep = (price > open_price) and (price > prev_close)
@@ -293,6 +307,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             print(f"[DEBUG] Prev Close: {prev_close:.4f} | Sweep: {bullish_sweep}")
         print(f"[DEBUG] RSI: {current_bar['RSI']:.1f} | Bias: {bias} | H4: {h4_trend}")
         print(f"[DEBUG] Position: {state['position']} | Cap: ${state['capital']:.2f}")
+        print(f"[DEBUG] Stats: {state['winning_trades']}W / {state['losing_trades']}L | Total PnL: ${state['total_pnl']:.2f}")
         print(f"{'='*80}\n")
     
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
@@ -316,10 +331,34 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             else:
                 exit_price = price
             
-            pnl = state["entry_size"] * (exit_price - state["entry_price"])
-            pnl -= state["entry_size"] * SLIPPAGE_RATE
-            pnl -= (exit_price * state["entry_size"]) * FEE_RATE
-            state["capital"] += pnl
+            # ✅ FIXED: Standard trading cost calculation (position value based)
+            gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
+            
+            # Exit costs (calculated on position value at exit)
+            position_value_at_exit = exit_price * state["entry_size"]
+            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
+            exit_fee = position_value_at_exit * FEE_RATE
+            
+            # Entry costs (for reporting only - already deducted at entry)
+            position_value_at_entry = state["entry_price"] * state["entry_size"]
+            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
+            entry_fee = position_value_at_entry * FEE_RATE
+            
+            # Net PnL = Gross PnL - EXIT costs only
+            total_fees = entry_fee + exit_fee  # For reporting
+            total_slippage = entry_slippage + exit_slippage  # For reporting
+            net_pnl = gross_pnl - exit_slippage - exit_fee  # Only deduct exit costs!
+            
+            state["capital"] += net_pnl
+            state["total_trades"] += 1
+            state["total_pnl"] += net_pnl
+            state["total_fees_paid"] += total_fees
+            state["total_slippage_paid"] += total_slippage
+            
+            if net_pnl > 0:
+                state["winning_trades"] += 1
+            else:
+                state["losing_trades"] += 1
             
             trade_row = {
                 "Symbol": symbol,
@@ -332,8 +371,15 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 "Take_Profit": round(state["entry_tp"], 6),
                 "Stop_Loss": round(state["entry_sl"], 6),
                 "Position_Size_Base": round(state["entry_size"], 8),
-                "PnL_$": round(pnl, 2),
-                "Win": 1 if pnl > 0 else 0,
+                "Gross_PnL_$": round(gross_pnl, 2),
+                "Entry_Fee_$": round(entry_fee, 2),
+                "Exit_Fee_$": round(exit_fee, 2),
+                "Total_Fees_$": round(total_fees, 2),
+                "Entry_Slippage_$": round(entry_slippage, 2),
+                "Exit_Slippage_$": round(exit_slippage, 2),
+                "Total_Slippage_$": round(total_slippage, 2),
+                "Net_PnL_$": round(net_pnl, 2),
+                "Win": 1 if net_pnl > 0 else 0,
                 "Exit_Reason": "MAX DRAWDOWN",
                 "Capital_After": round(state["capital"], 2),
                 "Mode": MODE
@@ -348,7 +394,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     
     blocked = state.get("permanently_stopped", False)
     
-    # Exit logic
+    # Exit logic with detailed tracking
     if state["position"] == 1 and not blocked:
         exit_flag = False
         exit_price = price
@@ -380,10 +426,36 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                     send_telegram(f"❌ {symbol} Exit error: {e}")
                     raise
             
-            pnl = state["entry_size"] * (exit_price - state["entry_price"])
-            pnl -= state["entry_size"] * SLIPPAGE_RATE
-            pnl -= (exit_price * state["entry_size"]) * FEE_RATE
-            state["capital"] += pnl
+            # ✅ FIXED: Standard trading cost calculation (position value based)
+            gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
+            
+            # Exit costs (calculated on position value at exit)
+            position_value_at_exit = exit_price * state["entry_size"]
+            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
+            exit_fee = position_value_at_exit * FEE_RATE
+            
+            # Entry costs (for reporting only - already deducted at entry)
+            position_value_at_entry = state["entry_price"] * state["entry_size"]
+            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
+            entry_fee = position_value_at_entry * FEE_RATE
+            
+            # Net PnL = Gross PnL - EXIT costs only
+            total_fees = entry_fee + exit_fee  # For reporting
+            total_slippage = entry_slippage + exit_slippage  # For reporting
+            net_pnl = gross_pnl - exit_slippage - exit_fee  # Only deduct exit costs!
+            
+            state["capital"] += net_pnl
+            state["total_trades"] += 1
+            state["total_pnl"] += net_pnl
+            state["total_fees_paid"] += total_fees
+            state["total_slippage_paid"] += total_slippage
+            
+            if net_pnl > 0:
+                state["winning_trades"] += 1
+            else:
+                state["losing_trades"] += 1
+            
+            win_rate = (state["winning_trades"] / state["total_trades"] * 100) if state["total_trades"] > 0 else 0
             
             trade_row = {
                 "Symbol": symbol,
@@ -396,8 +468,15 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 "Take_Profit": round(state["entry_tp"], 6),
                 "Stop_Loss": round(state["entry_sl"], 6),
                 "Position_Size_Base": round(state["entry_size"], 8),
-                "PnL_$": round(pnl, 2),
-                "Win": 1 if pnl > 0 else 0,
+                "Gross_PnL_$": round(gross_pnl, 2),
+                "Entry_Fee_$": round(entry_fee, 2),
+                "Exit_Fee_$": round(exit_fee, 2),
+                "Total_Fees_$": round(total_fees, 2),
+                "Entry_Slippage_$": round(entry_slippage, 2),
+                "Exit_Slippage_$": round(exit_slippage, 2),
+                "Total_Slippage_$": round(total_slippage, 2),
+                "Net_PnL_$": round(net_pnl, 2),
+                "Win": 1 if net_pnl > 0 else 0,
                 "Exit_Reason": exit_reason,
                 "Capital_After": round(state["capital"], 2),
                 "Mode": MODE
@@ -407,9 +486,26 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                           "entry_tp": 0.0, "entry_time": None, "entry_size": 0.0})
             state["last_exit_time"] = ts
             
-            send_telegram(f"{'💚' if pnl > 0 else '❤️'} EXIT {symbol} {exit_reason} @ ${exit_price:.4f} PnL=${pnl:.2f}")
+            # ✅ ENHANCED: Detailed exit notification
+            pnl_emoji = "💚" if net_pnl > 0 else "❤️"
+            exit_msg = f"""
+{pnl_emoji} EXIT {symbol} | {exit_reason}
+━━━━━━━━━━━━━━━━━━━━━━━
+📍 Exit Price: ${exit_price:.4f}
+💰 Gross PnL: ${gross_pnl:.2f}
+💸 Fees: ${total_fees:.2f} ({FEE_RATE*100}%)
+📉 Slippage: ${total_slippage:.2f}
+💵 Net PnL: ${net_pnl:.2f}
+━━━━━━━━━━━━━━━━━━━━━━━
+💼 Capital: ${state['capital']:.2f}
+📊 Stats: {state['winning_trades']}W / {state['losing_trades']}L
+📈 Win Rate: {win_rate:.1f}%
+💎 Total PnL: ${state['total_pnl']:.2f}
+"""
+            print(exit_msg)
+            send_telegram(exit_msg)
     
-    # Entry logic - NOW MATCHES 242% BACKTEST EXACTLY
+    # Entry logic with detailed tracking
     if state["position"] == 0 and not blocked:
         if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
             time_diff_hours = (ts - state["last_exit_time"]).total_seconds() / 3600
@@ -433,8 +529,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             print(f"  H4: {h4_ok}")
         
         if bias == 1 and bullish_sweep and vol_ok and rsi_ok and h4_ok:
-            send_telegram(f"🟢 ENTRY SIGNAL: {symbol} @ ${price:.2f}")
-            
             if USE_ATR_STOPS:
                 atr_val = float(current_bar["ATR"])
                 if np.isnan(atr_val) or atr_val <= 0:
@@ -450,12 +544,10 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["last_processed_ts"] = ts
                 return state, trade_row
             
-            # 🔥 UPDATED: Dynamic R:R logic now matches 242% backtest EXACTLY
             rr_ratio = RR_FIXED
             if DYNAMIC_RR and USE_ATR_STOPS and not np.isnan(current_bar["ATR"]):
-                # Use last 5 bars exactly like 242% backtest
-                if len(entry_df_work) >= 6:  # Need at least 6 bars for 5-bar lookback
-                    recent_atr = float(entry_df_work['ATR'].iloc[-6:-1].mean())  # Last 5 bars (i-5 to i-1)
+                if len(entry_df_work) >= 6:
+                    recent_atr = float(entry_df_work['ATR'].iloc[-6:-1].mean())
                     current_atr = float(current_bar["ATR"])
                     if recent_atr > 0:
                         if current_atr > recent_atr * 1.2:
@@ -464,8 +556,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                             rr_ratio = MAX_RR
             
             tp = price + rr_ratio * risk
-            
-            # Position sizing - matches 242% backtest exactly
             size_base = min(state["capital"] * RISK_PERCENT / risk if risk > 0 else 0, MAX_TRADE_SIZE)
             
             if DEBUG_MODE:
@@ -492,11 +582,42 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_size"] = size_base
                 state["bearish_count"] = 0
                 
-                # Fee & slippage - matches 242% backtest exactly
-                state["capital"] -= (size_base * SLIPPAGE_RATE)
-                state["capital"] -= (entry_price_used * size_base * FEE_RATE)
+                # ✅ FIXED: Standard trading cost calculation (position value based)
+                position_value = entry_price_used * size_base
+                entry_slippage = position_value * SLIPPAGE_RATE
+                entry_fee = position_value * FEE_RATE
+                entry_costs = entry_slippage + entry_fee
                 
-                send_telegram(f"🚀 ENTRY {symbol} @ ${entry_price_used:.4f} | SL=${sl:.4f} TP=${tp:.4f} RR={rr_ratio:.1f}")
+                state["capital"] -= entry_costs
+                
+                position_value = entry_price_used * size_base
+                risk_amount = state["capital"] * RISK_PERCENT
+                
+                # ✅ ENHANCED: Detailed entry notification
+                entry_msg = f"""
+🚀 ENTRY {symbol}
+━━━━━━━━━━━━━━━━━━━━━━━
+📍 Entry Price: ${entry_price_used:.4f}
+🎯 Stop Loss: ${sl:.4f}
+🎯 Take Profit: ${tp:.4f}
+📊 Risk:Reward: 1:{rr_ratio:.1f}
+━━━━━━━━━━━━━━━━━━━━━━━
+💼 Position Size: {size_base:.6f} {symbol.split('/')[0]}
+💰 Position Value: ${position_value:.2f}
+💸 Entry Fee: ${entry_fee:.2f}
+📉 Entry Slippage: ${entry_slippage:.2f}
+💵 Total Entry Cost: ${entry_costs:.2f}
+━━━━━━━━━━━━━━━━━━━━━━━
+💼 Capital Before: ${state['capital'] + entry_costs:.2f}
+💼 Capital After: ${state['capital']:.2f}
+💎 Risking: ${risk_amount:.2f} ({RISK_PERCENT*100}%)
+━━━━━━━━━━━━━━━━━━━━━━━
+📊 Total Trades: {state['total_trades']}
+📈 Record: {state['winning_trades']}W / {state['losing_trades']}L
+💰 Total PnL: ${state['total_pnl']:.2f}
+"""
+                print(entry_msg)
+                send_telegram(entry_msg)
         else:
             if DEBUG_MODE:
                 missing = []
@@ -518,8 +639,22 @@ def worker(symbol):
     state = load_state(state_file)
     tf_minutes = timeframe_to_minutes(ENTRY_TF)
 
-    print(f"{LOG_PREFIX} {symbol} Started | Mode={MODE} | Cap=${state['capital']:.2f}")
-    send_telegram(f"🤖 {symbol} Started | {ENTRY_TF}/{HTF} | ${PER_COIN_CAP_USD}")
+    # ✅ ENHANCED: Show initial statistics
+    initial_msg = f"""
+🤖 {symbol} Worker Started
+━━━━━━━━━━━━━━━━━━━━━━━
+💼 Starting Capital: ${state['capital']:.2f}
+📊 Previous Stats:
+  • Total Trades: {state['total_trades']}
+  • Wins: {state['winning_trades']}
+  • Losses: {state['losing_trades']}
+  • Total PnL: ${state['total_pnl']:.2f}
+  • Fees Paid: ${state['total_fees_paid']:.2f}
+  • Slippage: ${state['total_slippage_paid']:.2f}
+━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    print(initial_msg)
+    send_telegram(initial_msg.replace('━', '-'))
 
     while True:
         try:
@@ -550,7 +685,47 @@ def worker(symbol):
                 
                 if trade is not None:
                     append_trade(trades_csv, trade)
-                    print(f"💾 [TRADE] {symbol} | {trade['Exit_Reason']} | PnL=${trade['PnL_$']:.2f}")
+                    
+                    # ✅ ENHANCED: Show detailed trade log
+                    trade_summary = f"""
+{'='*80}
+📋 TRADE #{state['total_trades']} COMPLETED - {symbol}
+{'='*80}
+Entry: {format_ist_time(pd.to_datetime(trade['Entry_DateTime']))}
+Exit:  {format_ist_time(pd.to_datetime(trade['Exit_DateTime']))}
+
+💰 PRICES:
+  Entry: ${trade['Entry_Price']:.4f}
+  Exit:  ${trade['Exit_Price']:.4f}
+  Stop Loss: ${trade['Stop_Loss']:.4f}
+  Take Profit: ${trade['Take_Profit']:.4f}
+
+💵 P&L BREAKDOWN:
+  Gross PnL:       ${trade['Gross_PnL_$']:.2f}
+  Entry Fee:      -${trade['Entry_Fee_$']:.2f}
+  Exit Fee:       -${trade['Exit_Fee_$']:.2f}
+  Entry Slippage: -${trade['Entry_Slippage_$']:.2f}
+  Exit Slippage:  -${trade['Exit_Slippage_$']:.2f}
+  ─────────────────────────────
+  Net PnL:         ${trade['Net_PnL_$']:.2f} {'✅ WIN' if trade['Win'] else '❌ LOSS'}
+
+📊 STATISTICS ({symbol}):
+  Total Trades: {state['total_trades']}
+  Wins: {state['winning_trades']} | Losses: {state['losing_trades']}
+  Win Rate: {(state['winning_trades']/state['total_trades']*100) if state['total_trades'] > 0 else 0:.1f}%
+  Total PnL: ${state['total_pnl']:.2f}
+  Total Fees Paid: ${state['total_fees_paid']:.2f}
+  Total Slippage: ${state['total_slippage_paid']:.2f}
+
+💼 CAPITAL:
+  Capital After Trade: ${trade['Capital_After']:.2f}
+  Starting Capital: ${PER_COIN_CAP_USD:.2f}
+  Return: {((trade['Capital_After']/PER_COIN_CAP_USD - 1) * 100):.2f}%
+
+Exit Reason: {trade['Exit_Reason']}
+{'='*80}
+"""
+                    print(trade_summary)
                 
                 save_state(state_file, state)
 
@@ -581,23 +756,34 @@ def worker(symbol):
 def main():
     now_ist = get_ist_time()
     startup_msg = f"""
-🚀 Guardeer Trading Bot Started! (242% VERSION)
+🚀 Guardeer Trading Bot Started! (Enhanced Tracking)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⏰ Time: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}
 📊 Mode: {MODE.upper()}
 💰 Capital per coin: ${PER_COIN_CAP_USD:,.2f}
 🪙 Symbols: {', '.join(SYMBOLS)}
 📈 Timeframes: {ENTRY_TF} / {HTF}
-⚙️ Settings (242% Backtest):
-  • Risk: {RISK_PERCENT*100}%
-  • RR: {RR_FIXED}x (Dynamic: {MIN_RR}-{MAX_RR})
-  • Max DD: {MAX_DRAWDOWN*100}%
+
+⚙️ Strategy Settings:
+  • Risk per Trade: {RISK_PERCENT*100}%
+  • Risk:Reward: {RR_FIXED}x (Dynamic: {MIN_RR}-{MAX_RR}x)
+  • Max Drawdown: {MAX_DRAWDOWN*100}%
   • ATR Stops: {USE_ATR_STOPS}
   • H4 Filter: {USE_H1_FILTER}
   • Volume Filter: {USE_VOLUME_FILTER}
   • Cooldown: {COOLDOWN_HOURS}h
 
-✅ 242% Backtest Logic EXACTLY Replicated
+💸 Cost Settings:
+  • Slippage Rate: {SLIPPAGE_RATE*100}%
+  • Fee Rate: {FEE_RATE*100}%
+
+✅ Enhanced Features:
+  ✓ Detailed fee & slippage tracking
+  ✓ Per-coin statistics (W/L, PnL)
+  ✓ Capital breakdown on entry/exit
+  ✓ Real-time performance metrics
+  ✓ Complete trade history in CSV
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
     print(startup_msg)
@@ -612,8 +798,62 @@ def main():
     
     print(f"\n✅ {len(threads)} worker threads started!\n")
     
+    # ✅ NEW: Periodic statistics reporting
+    last_report_time = time.time()
+    report_interval = 3600  # Report every hour
+    
     while True:
-        time.sleep(3600)
+        time.sleep(60)
+        
+        # Generate hourly report
+        if time.time() - last_report_time >= report_interval:
+            try:
+                now_ist = get_ist_time()
+                report_lines = [f"\n📊 HOURLY REPORT - {now_ist.strftime('%I:%M %p IST')}", "="*60]
+                
+                total_capital = 0
+                total_trades_all = 0
+                total_wins_all = 0
+                total_losses_all = 0
+                total_pnl_all = 0
+                
+                for sym in SYMBOLS:
+                    state_file, _ = state_files_for_symbol(sym)
+                    if os.path.exists(state_file):
+                        state = load_state(state_file)
+                        total_capital += state['capital']
+                        total_trades_all += state['total_trades']
+                        total_wins_all += state['winning_trades']
+                        total_losses_all += state['losing_trades']
+                        total_pnl_all += state['total_pnl']
+                        
+                        win_rate = (state['winning_trades']/state['total_trades']*100) if state['total_trades'] > 0 else 0
+                        roi = ((state['capital']/PER_COIN_CAP_USD - 1) * 100)
+                        
+                        report_lines.append(f"\n{sym}:")
+                        report_lines.append(f"  Capital: ${state['capital']:.2f} ({roi:+.2f}%)")
+                        report_lines.append(f"  Trades: {state['total_trades']} | {state['winning_trades']}W/{state['losing_trades']}L | WR: {win_rate:.1f}%")
+                        report_lines.append(f"  PnL: ${state['total_pnl']:.2f} | Fees: ${state['total_fees_paid']:.2f}")
+                        report_lines.append(f"  Position: {'OPEN' if state['position'] == 1 else 'CLOSED'}")
+                
+                overall_win_rate = (total_wins_all/total_trades_all*100) if total_trades_all > 0 else 0
+                overall_roi = ((total_capital/(PER_COIN_CAP_USD * len(SYMBOLS)) - 1) * 100)
+                
+                report_lines.append(f"\n{'='*60}")
+                report_lines.append(f"PORTFOLIO TOTAL:")
+                report_lines.append(f"  Total Capital: ${total_capital:.2f} ({overall_roi:+.2f}%)")
+                report_lines.append(f"  Total Trades: {total_trades_all} | {total_wins_all}W/{total_losses_all}L")
+                report_lines.append(f"  Win Rate: {overall_win_rate:.1f}%")
+                report_lines.append(f"  Total PnL: ${total_pnl_all:.2f}")
+                report_lines.append("="*60)
+                
+                report_msg = "\n".join(report_lines)
+                print(report_msg)
+                send_telegram(report_msg)
+                
+                last_report_time = time.time()
+            except Exception as e:
+                print(f"Error generating report: {e}")
 
 if __name__ == "__main__":
     main()
