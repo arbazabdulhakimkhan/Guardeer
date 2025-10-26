@@ -701,11 +701,11 @@ Exit:  {format_ist_time(pd.to_datetime(trade['Exit_DateTime']))}
   Take Profit: ${trade['Take_Profit']:.4f}
 
 💵 P&L BREAKDOWN:
-  Gross PnL:       ${trade['Gross_PnL_]:.2f}
-  Entry Fee:      -${trade['Entry_Fee_]:.2f}
-  Exit Fee:       -${trade['Exit_Fee_]:.2f}
-  Entry Slippage: -${trade['Entry_Slippage_]:.2f}
-  Exit Slippage:  -${trade['Exit_Slippage_]:.2f}
+  Gross PnL:       ${trade['Gross_PnL_$']:.2f}
+  Entry Fee:      -${trade['Entry_Fee_$']:.2f}
+  Exit Fee:       -${trade['Exit_Fee_$']:.2f}
+  Entry Slippage: -${trade['Entry_Slippage_$']:.2f}
+  Exit Slippage:  -${trade['Exit_Slippage_$']:.2f}
   ─────────────────────────────
   Net PnL:         ${trade['Net_PnL_]:.2f} {'✅ WIN' if trade['Win'] else '❌ LOSS'}
 
@@ -857,3 +857,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
