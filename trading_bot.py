@@ -415,7 +415,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
         elif price <= state["entry_sl"]:
             exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
             state["bearish_count"] = 0
-        elif USE_H1_FILTER and h4_trend < 0:
+        elif USE_H1_FILTER and h4_trend < 0 and bias < 0:
             exit_flag, exit_price, exit_reason = True, price, "4H Trend Reversal"
             state["bearish_count"] = 0
         elif bias < 0:
@@ -867,3 +867,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
