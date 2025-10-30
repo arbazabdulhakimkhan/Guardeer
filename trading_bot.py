@@ -411,7 +411,8 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             total_fees = entry_fee + exit_fee
-            net_pnl = gross_pnl - exit_fee  # Only deduct exit fee
+            # ✅ CORRECT: Deduct BOTH entry and exit fees
+            net_pnl = gross_pnl - entry_fee - exit_fee  # Only deduct exit fee
             
             state["capital"] += net_pnl
             state["total_trades"] += 1
@@ -899,3 +900,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
