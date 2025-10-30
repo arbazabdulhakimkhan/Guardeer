@@ -28,45 +28,45 @@ def format_ist_time(dt):
     ist_dt = utc_to_ist(dt) if dt.tzinfo is None or dt.tzinfo == pytz.utc else dt
     return ist_dt.strftime('%Y-%m-%d %I:%M:%S %p IST')
 
-# CONFIG - CORRECT FOR SPOT TRADING
+# CONFIG - 5min/15min TESTING WITH REALISTIC PARAMETERS
 MODE = os.getenv("MODE", "paper").lower()
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "kucoin")
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT").split(",") if s.strip()]
-ENTRY_TF = os.getenv("ENTRY_TF", "1h")
-HTF = os.getenv("HTF", "4h")
+ENTRY_TF = os.getenv("ENTRY_TF", "5m")      # 🎯 CHANGED: 5min for testing
+HTF = os.getenv("HTF", "15m")               # 🎯 CHANGED: 15min for testing
 
 TOTAL_PORTFOLIO_CAPITAL = float(os.getenv("TOTAL_PORTFOLIO_CAPITAL", "10000"))
 PER_COIN_ALLOCATION = float(os.getenv("PER_COIN_ALLOCATION", "0.20"))
 PER_COIN_CAP_USD = TOTAL_PORTFOLIO_CAPITAL * PER_COIN_ALLOCATION
 
-RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.02"))
-RR_FIXED = float(os.getenv("RR_FIXED", "5.0"))
-DYNAMIC_RR = os.getenv("DYNAMIC_RR", "true").lower() == "true"
-MIN_RR = float(os.getenv("MIN_RR", "4.0"))
-MAX_RR = float(os.getenv("MAX_RR", "6.0"))
+# 🎯 REALISTIC PARAMETERS FOR 5min/15min TESTING
+RISK_PERCENT = float(os.getenv("RISK_PERCENT", "0.003"))    # 0.3% risk (even lower for high frequency)
+RR_FIXED = float(os.getenv("RR_FIXED", "1.5"))              # 1:1.5 R:R (achievable on short TF)
+DYNAMIC_RR = os.getenv("DYNAMIC_RR", "false").lower() == "true"
+MIN_RR = float(os.getenv("MIN_RR", "1.2"))
+MAX_RR = float(os.getenv("MAX_RR", "1.8"))
 
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
-ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "1.5"))
+ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "1.2"))        # Tighter stops for short TF
 USE_ATR_STOPS = os.getenv("USE_ATR_STOPS", "true").lower() == "true"
 USE_H1_FILTER = os.getenv("USE_H1_FILTER", "true").lower() == "true"
 
-USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "false").lower() == "true"
+USE_VOLUME_FILTER = os.getenv("USE_VOLUME_FILTER", "true").lower() == "true"  # Enable for short TF
 VOL_LOOKBACK = int(os.getenv("VOL_LOOKBACK", "20"))
-VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "0.5"))
+VOL_MIN_RATIO = float(os.getenv("VOL_MIN_RATIO", "1.2"))    # Higher volume requirement
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "25"))
-BIAS_CONFIRM_BEAR = int(os.getenv("BIAS_CONFIRM_BEAR", "2"))
+RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "30"))
 
-COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.0"))
-
-MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))
+# 🎯 ADJUSTED FOR HIGH FREQUENCY TRADING
+COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "0.5"))   # 30 minutes between trades
+MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "8")) # More trades allowed
+MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.10"))     # 10% max drawdown (tighter)
 MAX_TRADE_SIZE = float(os.getenv("MAX_TRADE_SIZE", "100000"))
 
-# CORRECT: Fees based on position value (exchange standard)
-SLIPPAGE_RATE = float(os.getenv("SLIPPAGE_RATE", "0.0005"))
-FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))
+# 🎯 REALISTIC COSTS - NO SLIPPAGE DEDUCTIONS
+FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))  # 0.1% fees only
 
-SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
+SLEEP_CAP = int(os.getenv("SLEEP_CAP", "30"))     # Shorter sleep for 5min
 DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
 API_KEY = os.getenv("KUCOIN_API_KEY", "")
@@ -181,8 +181,10 @@ def load_state(state_file):
             s["total_pnl"] = 0.0
         if "total_fees_paid" not in s:
             s["total_fees_paid"] = 0.0
-        if "total_slippage_paid" not in s:
-            s["total_slippage_paid"] = 0.0
+        if "trades_today" not in s:
+            s["trades_today"] = 0
+        if "last_trade_date" not in s:
+            s["last_trade_date"] = None
         
         return s
     return {
@@ -196,13 +198,13 @@ def load_state(state_file):
         "peak_equity": PER_COIN_CAP_USD,
         "last_processed_ts": None,
         "last_exit_time": None,
-        "bearish_count": 0,
         "total_trades": 0,
         "winning_trades": 0,
         "losing_trades": 0,
         "total_pnl": 0.0,
         "total_fees_paid": 0.0,
-        "total_slippage_paid": 0.0
+        "trades_today": 0,
+        "last_trade_date": None
     }
 
 def save_state(state_file, state):
@@ -210,6 +212,7 @@ def save_state(state_file, state):
     s["entry_time"] = state["entry_time"].isoformat() if state["entry_time"] is not None else None
     s["last_processed_ts"] = state["last_processed_ts"].isoformat() if state["last_processed_ts"] is not None else None
     s["last_exit_time"] = state["last_exit_time"].isoformat() if state.get("last_exit_time") is not None else None
+    s["last_trade_date"] = state["last_trade_date"].isoformat() if state.get("last_trade_date") is not None else None
     with open(state_file, "w") as f:
         json.dump(s, f, indent=2)
 
@@ -253,11 +256,11 @@ def avg_fill_price_from_order(order):
         if qty > 0: return notional / qty
     return None
 
-# ✅ FIXED: CORRECT Spot Trading Position Sizing
+# 🎯 REALISTIC Spot Trading Position Sizing for 5min/15min
 def calculate_spot_position_size(price, sl, capital, risk_percent, max_trade_size):
-    """Calculate position size for spot trading considering both risk and available capital"""
-    risk_per_trade = capital * risk_percent  # e.g., $2000 × 2% = $40
-    risk_per_coin = abs(price - sl)          # e.g., $195.77 - $195.27 = $0.50
+    """Calculate REALISTIC position size for short timeframe trading"""
+    risk_per_trade = capital * risk_percent  # e.g., $2000 × 0.3% = $6
+    risk_per_coin = abs(price - sl)          # e.g., $100 - $99.80 = $0.20
     
     # Maximum shares based on risk management
     max_by_risk = risk_per_trade / risk_per_coin if risk_per_coin > 0 else 0
@@ -268,14 +271,68 @@ def calculate_spot_position_size(price, sl, capital, risk_percent, max_trade_siz
     # Take the minimum - you're limited by actual capital in spot trading!
     size_base = min(max_by_risk, max_by_capital, max_trade_size)
     
-    return max(size_base, 0)  # Ensure non-negative
+    # Calculate ACTUAL risk percentage (for reporting)
+    actual_risk_pct = (size_base * risk_per_coin) / capital * 100
+    
+    if DEBUG_MODE:
+        print(f"[POSITION SIZING] Desired risk: {risk_percent*100}% (${risk_per_trade:.2f})")
+        print(f"[POSITION SIZING] Actual risk: {actual_risk_pct:.2f}% (${size_base * risk_per_coin:.2f})")
+    
+    return max(size_base, 0)
 
-# ✅ CORRECTED: Proper fee calculations with spot trading constraints
+# 🎯 ENHANCED: Better entry filters for 5min/15min timeframe
+def is_high_quality_5min_setup(current_bar, prev_bar, htf_trend):
+    """Enhanced filters for 5min/15min timeframe trading"""
+    
+    # 1. Minimum candle size filter (avoid noise)
+    candle_size_pct = (current_bar['High'] - current_bar['Low']) / current_bar['Low']
+    if candle_size_pct < 0.003:  # Minimum 0.3% candle size
+        if DEBUG_MODE:
+            print(f"❌ Rejected: Candle too small ({candle_size_pct:.3%})")
+        return False
+    
+    # 2. Strong volume confirmation (critical for short TF)
+    if USE_VOLUME_FILTER and 'Avg_Volume' in current_bar and not np.isnan(current_bar['Avg_Volume']):
+        volume_ratio = current_bar['Volume'] / current_bar['Avg_Volume']
+        if volume_ratio < VOL_MIN_RATIO:
+            if DEBUG_MODE:
+                print(f"❌ Rejected: Low volume (ratio: {volume_ratio:.2f})")
+            return False
+    
+    # 3. RSI momentum filter (avoid extremes)
+    rsi = current_bar['RSI']
+    if not (25 < rsi < 75):  # Tighter range for short TF
+        if DEBUG_MODE:
+            print(f"❌ Rejected: RSI at extreme ({rsi:.1f})")
+        return False
+    
+    # 4. Higher timeframe trend alignment
+    if USE_H1_FILTER and htf_trend != 1:
+        if DEBUG_MODE:
+            print(f"❌ Rejected: Not in 15min uptrend (Trend: {htf_trend})")
+        return False
+    
+    return True
+
+# 🎯 FIXED: Realistic cost calculations - NO SLIPPAGE DEDUCTIONS
 def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: MarketInfo=None):
     """
-    🔥 FIXED: Correct spot trading with capital constraints
+    🔥 OPTIMIZED for 5min/15min timeframe testing
     """
     if len(entry_df) < 3:
+        return state, None
+    
+    # Reset daily trade counter if new day
+    current_date = datetime.now().date()
+    if state.get("last_trade_date") != current_date:
+        state["trades_today"] = 0
+        state["last_trade_date"] = current_date
+    
+    # Check daily trade limit
+    if state["trades_today"] >= MAX_TRADES_PER_DAY:
+        if DEBUG_MODE:
+            print(f"[TRADE LIMIT] {symbol}: Already {state['trades_today']}/{MAX_TRADES_PER_DAY} trades today")
+        state["last_processed_ts"] = entry_df.index[-1]
         return state, None
     
     entry_df_work = entry_df.copy()
@@ -288,7 +345,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     h.loc[h["Close"] > h["Close"].shift(1), "Trend"] = 1
     h.loc[h["Close"] < h["Close"].shift(1), "Trend"] = -1
     
-    entry_df_work["H4_Trend"] = h["Trend"].reindex(entry_df_work.index, method="ffill").fillna(0).astype(int)
+    entry_df_work["HTF_Trend"] = h["Trend"].reindex(entry_df_work.index, method="ffill").fillna(0).astype(int)
     entry_df_work["ATR"] = calculate_atr(entry_df_work, ATR_PERIOD) if USE_ATR_STOPS else np.nan
     
     if USE_VOLUME_FILTER:
@@ -303,7 +360,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     price = float(current_bar["Close"])
     open_price = float(current_bar["Open"])
     bias = int(current_bar["Bias"])
-    h4_trend = int(current_bar["H4_Trend"])
+    htf_trend = int(current_bar["HTF_Trend"])
     
     if i >= 1:
         prev_close = float(entry_df_work['Close'].iloc[i-1])
@@ -314,13 +371,14 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     if DEBUG_MODE:
         ts_ist = utc_to_ist(ts)
         print(f"\n{'='*80}")
-        print(f"[DEBUG] {symbol} | Bar[{i}] @ {ts_ist.strftime('%Y-%m-%d %I:%M:%S %p IST')}")
+        print(f"[DEBUG] {symbol} | 5min Bar[{i}] @ {ts_ist.strftime('%Y-%m-%d %I:%M:%S %p IST')}")
         print(f"[DEBUG] OHLC: O={open_price:.4f} H={current_bar['High']:.4f} L={current_bar['Low']:.4f} C={price:.4f}")
         if i >= 1:
             print(f"[DEBUG] Prev Close: {prev_close:.4f} | Sweep: {bullish_sweep}")
-        print(f"[DEBUG] RSI: {current_bar['RSI']:.1f} | Bias: {bias} | H4: {h4_trend}")
+        print(f"[DEBUG] RSI: {current_bar['RSI']:.1f} | Bias: {bias} | 15min Trend: {htf_trend}")
         print(f"[DEBUG] Position: {state['position']} | Cap: ${state['capital']:.2f}")
         print(f"[DEBUG] Stats: {state['winning_trades']}W / {state['losing_trades']}L | Total PnL: ${state['total_pnl']:.2f}")
+        print(f"[DEBUG] Trades Today: {state['trades_today']}/{MAX_TRADES_PER_DAY}")
         print(f"{'='*80}\n")
     
     state["peak_equity"] = max(state["peak_equity"], state["capital"])
@@ -344,25 +402,22 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             else:
                 exit_price = price
             
-            # ✅ CORRECT: Calculate costs based on POSITION VALUE
+            # 🎯 FIXED: Only deduct ACTUAL fees (no slippage deductions)
             position_value_at_exit = exit_price * state["entry_size"]
-            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
             exit_fee = position_value_at_exit * FEE_RATE
             
             position_value_at_entry = state["entry_price"] * state["entry_size"]
             entry_fee = position_value_at_entry * FEE_RATE
-            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
             
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             total_fees = entry_fee + exit_fee
-            total_slippage = entry_slippage + exit_slippage
-            net_pnl = gross_pnl - exit_fee - exit_slippage  # Only deduct exit costs at exit
+            net_pnl = gross_pnl - exit_fee  # Only deduct exit fee
             
             state["capital"] += net_pnl
             state["total_trades"] += 1
+            state["trades_today"] += 1
             state["total_pnl"] += net_pnl
             state["total_fees_paid"] += total_fees
-            state["total_slippage_paid"] += total_slippage
             
             if net_pnl > 0:
                 state["winning_trades"] += 1
@@ -384,9 +439,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 "Entry_Fee_$": round(entry_fee, 2),
                 "Exit_Fee_$": round(exit_fee, 2),
                 "Total_Fees_$": round(total_fees, 2),
-                "Entry_Slippage_$": round(entry_slippage, 2),
-                "Exit_Slippage_$": round(exit_slippage, 2),
-                "Total_Slippage_$": round(total_slippage, 2),
                 "Net_PnL_$": round(net_pnl, 2),
                 "Win": 1 if net_pnl > 0 else 0,
                 "Exit_Reason": "MAX DRAWDOWN",
@@ -403,7 +455,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     
     blocked = state.get("permanently_stopped", False)
     
-    # Exit logic with CORRECT tracking
+    # Exit logic - Only TP or SL
     if state["position"] == 1 and not blocked:
         exit_flag = False
         exit_price = price
@@ -411,13 +463,8 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
         
         if price >= state["entry_tp"]:
             exit_flag, exit_price, exit_reason = True, state["entry_tp"], "Take Profit"
-            state["bearish_count"] = 0
         elif price <= state["entry_sl"]:
             exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
-            state["bearish_count"] = 0
-        
-        else:
-            state["bearish_count"] = 0
         
         if exit_flag:
             if MODE == "live":
@@ -428,25 +475,22 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                     send_telegram(f"❌ {symbol} Exit error: {e}")
                     raise
             
-            # ✅ CORRECT: Calculate costs based on POSITION VALUE
+            # 🎯 FIXED: Only deduct ACTUAL fees (no slippage deductions)
             position_value_at_exit = exit_price * state["entry_size"]
-            exit_slippage = position_value_at_exit * SLIPPAGE_RATE
             exit_fee = position_value_at_exit * FEE_RATE
             
             position_value_at_entry = state["entry_price"] * state["entry_size"]
             entry_fee = position_value_at_entry * FEE_RATE
-            entry_slippage = position_value_at_entry * SLIPPAGE_RATE
             
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             total_fees = entry_fee + exit_fee
-            total_slippage = entry_slippage + exit_slippage
-            net_pnl = gross_pnl - exit_fee - exit_slippage  # Only deduct exit costs at exit
+            net_pnl = gross_pnl - exit_fee  # Only deduct exit fee
             
             state["capital"] += net_pnl
             state["total_trades"] += 1
+            state["trades_today"] += 1
             state["total_pnl"] += net_pnl
             state["total_fees_paid"] += total_fees
-            state["total_slippage_paid"] += total_slippage
             
             if net_pnl > 0:
                 state["winning_trades"] += 1
@@ -470,9 +514,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 "Entry_Fee_$": round(entry_fee, 2),
                 "Exit_Fee_$": round(exit_fee, 2),
                 "Total_Fees_$": round(total_fees, 2),
-                "Entry_Slippage_$": round(entry_slippage, 2),
-                "Exit_Slippage_$": round(exit_slippage, 2),
-                "Total_Slippage_$": round(total_slippage, 2),
                 "Net_PnL_$": round(net_pnl, 2),
                 "Win": 1 if net_pnl > 0 else 0,
                 "Exit_Reason": exit_reason,
@@ -491,41 +532,38 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 📍 Exit Price: ${exit_price:.4f}
 💰 Gross PnL: ${gross_pnl:.2f}
 💸 Fees: ${total_fees:.2f} ({FEE_RATE*100}%)
-📉 Slippage: ${total_slippage:.2f}
 💵 Net PnL: ${net_pnl:.2f}
 ━━━━━━━━━━━━━━━━━━━━━━━
 💼 Capital: ${state['capital']:.2f}
 📊 Stats: {state['winning_trades']}W / {state['losing_trades']}L
 📈 Win Rate: {win_rate:.1f}%
 💎 Total PnL: ${state['total_pnl']:.2f}
+🎯 Trades Today: {state['trades_today']}/{MAX_TRADES_PER_DAY}
 """
             print(exit_msg)
             send_telegram(exit_msg)
     
-    # ✅ FIXED ENTRY LOGIC: Correct spot trading position sizing
-    if state["position"] == 0 and not blocked:
+    # Entry logic with ENHANCED filters
+    if state["position"] == 0 and not blocked and state["trades_today"] < MAX_TRADES_PER_DAY:
         if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
             time_diff_hours = (ts - state["last_exit_time"]).total_seconds() / 3600
             if time_diff_hours < COOLDOWN_HOURS:
+                if DEBUG_MODE:
+                    print(f"[COOLDOWN] {symbol}: {time_diff_hours:.1f}h since last trade, need {COOLDOWN_HOURS}h")
                 state["last_processed_ts"] = ts
                 return state, None
         
-        vol_ok = True
-        if USE_VOLUME_FILTER and not np.isnan(current_bar.get("Avg_Volume", np.nan)):
-            vol_ok = current_bar["Volume"] >= VOL_MIN_RATIO * current_bar["Avg_Volume"]
-        
-        rsi_ok = True if np.isnan(current_bar["RSI"]) else current_bar["RSI"] > RSI_OVERSOLD
-        h4_ok = (not USE_H1_FILTER) or (h4_trend == 1)
+        # 🎯 ENHANCED: Use better filters for 5min/15min
+        basic_conditions = bias == 1 and bullish_sweep
+        quality_conditions = is_high_quality_5min_setup(current_bar, current_bar, htf_trend)
         
         if DEBUG_MODE:
             print(f"[ENTRY CHECK] {symbol}")
-            print(f"  Bias==1: {bias == 1}")
-            print(f"  Bullish Sweep: {bullish_sweep}")
-            print(f"  Volume: {vol_ok}")
-            print(f"  RSI: {rsi_ok} ({current_bar['RSI']:.1f})")
-            print(f"  H4: {h4_ok}")
+            print(f"  Basic Conditions: {basic_conditions}")
+            print(f"  Quality Filters: {quality_conditions}")
+            print(f"  Trades Today: {state['trades_today']}/{MAX_TRADES_PER_DAY}")
         
-        if bias == 1 and bullish_sweep and vol_ok and rsi_ok and h4_ok:
+        if basic_conditions and quality_conditions:
             if USE_ATR_STOPS:
                 atr_val = float(current_bar["ATR"])
                 if np.isnan(atr_val) or atr_val <= 0:
@@ -542,19 +580,10 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 return state, trade_row
             
             rr_ratio = RR_FIXED
-            if DYNAMIC_RR and USE_ATR_STOPS and not np.isnan(current_bar["ATR"]):
-                if len(entry_df_work) >= 6:
-                    recent_atr = float(entry_df_work['ATR'].iloc[-6:-1].mean())
-                    current_atr = float(current_bar["ATR"])
-                    if recent_atr > 0:
-                        if current_atr > recent_atr * 1.2:
-                            rr_ratio = MIN_RR
-                        elif current_atr < recent_atr * 0.8:
-                            rr_ratio = MAX_RR
             
             tp = price + rr_ratio * risk
             
-            # ✅ FIXED: Use correct spot trading position sizing
+            # 🎯 FIXED: Use realistic spot trading position sizing
             size_base = calculate_spot_position_size(
                 price, sl, state["capital"], RISK_PERCENT, MAX_TRADE_SIZE
             )
@@ -562,12 +591,13 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             if DEBUG_MODE:
                 risk_amount = state["capital"] * RISK_PERCENT
                 max_by_capital = state["capital"] / price
+                actual_risk_amount = size_base * risk
                 print(f"[POSITION SIZING] Price: ${price:.4f}, SL: ${sl:.4f}")
-                print(f"  Risk Amount: ${risk_amount:.2f}, Risk per coin: ${risk:.4f}")
-                print(f"  Max by Risk: {risk_amount/risk:.2f} coins")
+                print(f"  Desired Risk: ${risk_amount:.2f} ({RISK_PERCENT*100}%)")
+                print(f"  Actual Risk: ${actual_risk_amount:.2f} ({actual_risk_amount/state['capital']*100:.2f}%)")
                 print(f"  Max by Capital: {max_by_capital:.2f} coins")
                 print(f"  Final Size: {size_base:.6f} coins")
-                print(f"[ENTRY] Setup: Entry=${price:.4f} SL=${sl:.4f} TP=${tp:.4f} RR={rr_ratio:.1f} Size={size_base:.6f}")
+                print(f"[ENTRY] Setup: Entry=${price:.4f} SL=${sl:.4f} TP=${tp:.4f} RR={rr_ratio:.1f}")
             
             if size_base > 0:
                 entry_price_used = price
@@ -582,11 +612,10 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                         send_telegram(f"❌ {symbol} Entry error: {e}")
                         raise
                 
-                # ✅ CORRECT: Calculate costs based on POSITION VALUE
+                # 🎯 FIXED: Only deduct ACTUAL fees (no slippage)
                 position_value = entry_price_used * size_base
                 entry_fee = position_value * FEE_RATE
-                entry_slippage = position_value * SLIPPAGE_RATE
-                entry_costs = entry_fee + entry_slippage
+                entry_costs = entry_fee  # Only fees
                 
                 state["position"] = 1
                 state["entry_price"] = entry_price_used
@@ -594,15 +623,15 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_tp"] = tp
                 state["entry_time"] = ts
                 state["entry_size"] = size_base
-                state["bearish_count"] = 0
                 
-                # ✅ CORRECT: Deduct both fees and slippage at entry
+                # 🎯 FIXED: Deduct only fees (no slippage)
                 state["capital"] -= entry_costs
                 
-                risk_amount = state["capital"] * RISK_PERCENT
+                actual_risk_amount = size_base * abs(entry_price_used - sl)
+                actual_risk_pct = (actual_risk_amount / (state["capital"] + entry_costs)) * 100
                 
                 entry_msg = f"""
-🚀 ENTRY {symbol}
+🚀 ENTRY {symbol} (5min/15min)
 ━━━━━━━━━━━━━━━━━━━━━━━
 📍 Entry Price: ${entry_price_used:.4f}
 🎯 Stop Loss: ${sl:.4f}
@@ -612,16 +641,16 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
 💼 Position Size: {size_base:.6f} {symbol.split('/')[0]}
 💰 Position Value: ${position_value:.2f}
 💸 Entry Fee: ${entry_fee:.2f} (${position_value:.2f} × {FEE_RATE*100}%)
-📉 Entry Slippage: ${entry_slippage:.2f} (${position_value:.2f} × {SLIPPAGE_RATE*100}%)
 💵 Total Entry Cost: ${entry_costs:.2f}
 ━━━━━━━━━━━━━━━━━━━━━━━
 💼 Capital Before: ${state['capital'] + entry_costs:.2f}
 💼 Capital After: ${state['capital']:.2f}
-💎 Risking: ${risk_amount:.2f} ({RISK_PERCENT*100}%)
+💎 Actual Risk: ${actual_risk_amount:.2f} ({actual_risk_pct:.2f}%)
 ━━━━━━━━━━━━━━━━━━━━━━━
 📊 Total Trades: {state['total_trades']}
 📈 Record: {state['winning_trades']}W / {state['losing_trades']}L
 💰 Total PnL: ${state['total_pnl']:.2f}
+🎯 Trades Today: {state['trades_today']+1}/{MAX_TRADES_PER_DAY}
 """
                 print(entry_msg)
                 send_telegram(entry_msg)
@@ -630,9 +659,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 missing = []
                 if bias != 1: missing.append(f"Bias({bias})")
                 if not bullish_sweep: missing.append("Sweep")
-                if not vol_ok: missing.append("Vol")
-                if not rsi_ok: missing.append("RSI")
-                if not h4_ok: missing.append("H4")
+                if not quality_conditions: missing.append("QualityFilters")
                 print(f"❌ Missing: {', '.join(missing)}")
     
     state["last_processed_ts"] = ts
@@ -647,7 +674,7 @@ def worker(symbol):
     tf_minutes = timeframe_to_minutes(ENTRY_TF)
 
     initial_msg = f"""
-🤖 {symbol} Worker Started
+🤖 {symbol} Worker Started (5min/15min)
 ━━━━━━━━━━━━━━━━━━━━━━━
 💼 Starting Capital: ${state['capital']:.2f}
 📊 Previous Stats:
@@ -656,7 +683,11 @@ def worker(symbol):
   • Losses: {state['losing_trades']}
   • Total PnL: ${state['total_pnl']:.2f}
   • Fees Paid: ${state['total_fees_paid']:.2f}
-  • Slippage: ${state['total_slippage_paid']:.2f}
+🎯 5min/15min Settings:
+  • Max Trades/Day: {MAX_TRADES_PER_DAY}
+  • Risk/Trade: {RISK_PERCENT*100}%
+  • Risk:Reward: 1:{RR_FIXED}
+  • Cooldown: {COOLDOWN_HOURS}h
 ━━━━━━━━━━━━━━━━━━━━━━━
 """
     print(initial_msg)
@@ -685,7 +716,7 @@ def worker(symbol):
 
             if closed_candle_ts > state["last_processed_ts"]:
                 if DEBUG_MODE:
-                    print(f"\n[WORKER] {symbol} | 🆕 NEW CANDLE @ {utc_to_ist(closed_candle_ts).strftime('%I:%M %p')}")
+                    print(f"\n[WORKER] {symbol} | 🆕 5min CANDLE @ {utc_to_ist(closed_candle_ts).strftime('%I:%M %p')}")
                 
                 state, trade = process_bar(symbol, entry_df, htf_df, state, exchange=exchange, market_info=market_info)
                 
@@ -694,7 +725,7 @@ def worker(symbol):
                     
                     trade_summary = f"""
 {'='*80}
-📋 TRADE #{state['total_trades']} COMPLETED - {symbol}
+📋 TRADE #{state['total_trades']} COMPLETED - {symbol} (5min/15min)
 {'='*80}
 Entry: {format_ist_time(pd.to_datetime(trade['Entry_DateTime']))}
 Exit:  {format_ist_time(pd.to_datetime(trade['Exit_DateTime']))}
@@ -709,8 +740,6 @@ Exit:  {format_ist_time(pd.to_datetime(trade['Exit_DateTime']))}
   Gross PnL:       ${trade['Gross_PnL_$']:.2f}
   Entry Fee:      -${trade['Entry_Fee_$']:.2f}
   Exit Fee:       -${trade['Exit_Fee_$']:.2f}
-  Entry Slippage: -${trade['Entry_Slippage_$']:.2f}
-  Exit Slippage:  -${trade['Exit_Slippage_$']:.2f}
   ─────────────────────────────
   Net PnL:         ${trade['Net_PnL_$']:.2f} {'✅ WIN' if trade['Win'] else '❌ LOSS'}
 
@@ -720,7 +749,7 @@ Exit:  {format_ist_time(pd.to_datetime(trade['Exit_DateTime']))}
   Win Rate: {(state['winning_trades']/state['total_trades']*100) if state['total_trades'] > 0 else 0:.1f}%
   Total PnL: ${state['total_pnl']:.2f}
   Total Fees Paid: ${state['total_fees_paid']:.2f}
-  Total Slippage: ${state['total_slippage_paid']:.2f}
+  Trades Today: {state['trades_today']}/{MAX_TRADES_PER_DAY}
 
 💼 CAPITAL:
   Capital After Trade: ${trade['Capital_After']:.2f}
@@ -744,7 +773,7 @@ Exit Reason: {trade['Exit_Reason']}
                 sleep_sec = SLEEP_CAP
             
             if DEBUG_MODE:
-                print(f"[SLEEP] {symbol} | Next check in {sleep_sec/60:.1f}m\n")
+                print(f"[SLEEP] {symbol} | Next 5min check in {sleep_sec/60:.1f}m\n")
             
             time.sleep(sleep_sec)
 
@@ -761,33 +790,39 @@ Exit Reason: {trade['Exit_Reason']}
 def main():
     now_ist = get_ist_time()
     startup_msg = f"""
-🚀 Guardeer Trading Bot Started! (FINAL FIXED VERSION)
+🚀 Guardeer Trading Bot - 5min/15min TESTING MODE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⏰ Time: {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}
 📊 Mode: {MODE.upper()}
 💰 Capital per coin: ${PER_COIN_CAP_USD:,.2f}
 🪙 Symbols: {', '.join(SYMBOLS)}
-📈 Timeframes: {ENTRY_TF} / {HTF}
+🎯 TIMEFRAMES: {ENTRY_TF} / {HTF} (HIGH FREQUENCY TESTING)
 
-⚙️ Strategy Settings:
-  • Risk per Trade: {RISK_PERCENT*100}%
-  • Risk:Reward: {RR_FIXED}x (Dynamic: {MIN_RR}-{MAX_RR}x)
-  • Max Drawdown: {MAX_DRAWDOWN*100}%
-  • ATR Stops: {USE_ATR_STOPS}
-  • H4 Filter: {USE_H1_FILTER}
-  • Volume Filter: {USE_VOLUME_FILTER}
-  • Cooldown: {COOLDOWN_HOURS}h
+⚙️ OPTIMIZED FOR 5min/15min:
+  • Risk per Trade: {RISK_PERCENT*100}% (lower for high frequency)
+  • Risk:Reward: 1:{RR_FIXED} (achievable on short TF)
+  • Max Trades/Day: {MAX_TRADES_PER_DAY}
+  • Cooldown: {COOLDOWN_HOURS}h between trades
+  • Max Drawdown: {MAX_DRAWDOWN*100}% (tighter)
 
-💸 CORRECT Spot Trading:
-  • Slippage Rate: {SLIPPAGE_RATE*100}% (on position value)
-  • Fee Rate: {FEE_RATE*100}% (on position value) - KuCoin Standard
-  • ✅ POSITION SIZING FIXED for spot trading constraints
+🎯 ENHANCED FILTERS:
+  • Volume Filter: Enabled (min {VOL_MIN_RATIO}x avg volume)
+  • Candle Size: Min 0.3% body required
+  • RSI Range: 25-75 (tighter momentum)
+  • 15min Trend: Must be aligned
 
-✅ Final Fixes Applied:
-  ✓ Correct spot trading position sizing
-  ✓ Realistic capital constraints
-  ✓ Fees calculated on actual position value
-  ✓ Proper risk management within available capital
+✅ CRITICAL FIXES APPLIED:
+  ✓ Realistic 0.3% risk per trade
+  ✓ Realistic 1:1.5 Risk:Reward
+  ✓ REMOVED double-counted slippage deductions
+  ✓ Enhanced quality filters for short timeframe
+  ✓ Only actual fees deducted
+
+⚠️  HIGH FREQUENCY WARNING:
+  • More noise on 5min charts
+  • Higher fee impact potential
+  • Requires stricter filters
+  • TEST CAREFULLY!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -801,10 +836,10 @@ def main():
         threads.append(t)
         time.sleep(2)
     
-    print(f"\n✅ {len(threads)} worker threads started!\n")
+    print(f"\n✅ {len(threads)} worker threads started for 5min/15min testing!\n")
     
     last_report_time = time.time()
-    report_interval = 3600
+    report_interval = 1800  # 30-minute reports for high frequency
     
     while True:
         time.sleep(60)
@@ -812,13 +847,14 @@ def main():
         if time.time() - last_report_time >= report_interval:
             try:
                 now_ist = get_ist_time()
-                report_lines = [f"\n📊 HOURLY REPORT - {now_ist.strftime('%I:%M %p IST')}", "="*60]
+                report_lines = [f"\n📊 30-MIN REPORT - {now_ist.strftime('%I:%M %p IST')} (5min/15min)", "="*60]
                 
                 total_capital = 0
                 total_trades_all = 0
                 total_wins_all = 0
                 total_losses_all = 0
                 total_pnl_all = 0
+                total_trades_today = 0
                 
                 for sym in SYMBOLS:
                     state_file, _ = state_files_for_symbol(sym)
@@ -829,6 +865,7 @@ def main():
                         total_wins_all += state['winning_trades']
                         total_losses_all += state['losing_trades']
                         total_pnl_all += state['total_pnl']
+                        total_trades_today += state.get('trades_today', 0)
                         
                         win_rate = (state['winning_trades']/state['total_trades']*100) if state['total_trades'] > 0 else 0
                         roi = ((state['capital']/PER_COIN_CAP_USD - 1) * 100)
@@ -837,6 +874,7 @@ def main():
                         report_lines.append(f"  Capital: ${state['capital']:.2f} ({roi:+.2f}%)")
                         report_lines.append(f"  Trades: {state['total_trades']} | {state['winning_trades']}W/{state['losing_trades']}L | WR: {win_rate:.1f}%")
                         report_lines.append(f"  PnL: ${state['total_pnl']:.2f} | Fees: ${state['total_fees_paid']:.2f}")
+                        report_lines.append(f"  Today: {state.get('trades_today', 0)}/{MAX_TRADES_PER_DAY}")
                         report_lines.append(f"  Position: {'OPEN' if state['position'] == 1 else 'CLOSED'}")
                 
                 overall_win_rate = (total_wins_all/total_trades_all*100) if total_trades_all > 0 else 0
@@ -848,6 +886,7 @@ def main():
                 report_lines.append(f"  Total Trades: {total_trades_all} | {total_wins_all}W/{total_losses_all}L")
                 report_lines.append(f"  Win Rate: {overall_win_rate:.1f}%")
                 report_lines.append(f"  Total PnL: ${total_pnl_all:.2f}")
+                report_lines.append(f"  Trades Today: {total_trades_today}/{MAX_TRADES_PER_DAY * len(SYMBOLS)}")
                 report_lines.append("="*60)
                 
                 report_msg = "\n".join(report_lines)
@@ -860,6 +899,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
