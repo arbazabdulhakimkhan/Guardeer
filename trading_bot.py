@@ -64,9 +64,8 @@ FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))
 SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
 DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
-# ✅ NEW: Daily summary settings
 SEND_DAILY_SUMMARY = os.getenv("SEND_DAILY_SUMMARY", "true").lower() == "true"
-SUMMARY_HOUR = int(os.getenv("SUMMARY_HOUR", "20"))  # 8 PM IST default
+SUMMARY_HOUR = int(os.getenv("SUMMARY_HOUR", "20"))
 
 if MODE == "live":
     SLIPPAGE_RATE = 0.0
@@ -190,7 +189,6 @@ def generate_daily_summary():
         today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
         today_end_ist = now_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
         
-        # Convert to UTC for comparison with CSV data
         today_start_utc = today_start_ist.astimezone(pytz.utc).replace(tzinfo=None)
         today_end_utc = today_end_ist.astimezone(pytz.utc).replace(tzinfo=None)
         
@@ -210,7 +208,6 @@ def generate_daily_summary():
         for symbol in SYMBOLS:
             state_file, trades_csv = state_files_for_symbol(symbol)
             
-            # Load state
             if not os.path.exists(state_file):
                 continue
                 
@@ -219,16 +216,13 @@ def generate_daily_summary():
             position_status = "OPEN" if state["position"] == 1 else "CLOSED"
             initial_capital = PER_COIN_CAP_USD
             
-            # Load trades
             if os.path.exists(trades_csv):
                 try:
                     df = pd.read_csv(trades_csv)
                     
                     if len(df) > 0:
-                        # Convert Exit_DateTime to datetime (handle both UTC and local)
                         df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime'], utc=True).dt.tz_localize(None)
                         
-                        # Filter today's trades (exits that happened today)
                         today_trades = df[(df['Exit_DateTime'] >= today_start_utc) & 
                                          (df['Exit_DateTime'] <= today_end_utc)]
                         
@@ -238,16 +232,13 @@ def generate_daily_summary():
                         win_rate_today = (wins_today / n_trades_today * 100) if n_trades_today > 0 else 0
                         pnl_today = float(today_trades['PnL_$'].sum()) if n_trades_today > 0 else 0.0
                         
-                        # All-time stats
                         all_trades = len(df)
                         all_wins = int(df['Win'].sum())
                         all_losses = all_trades - all_wins
                         all_wr = (all_wins / all_trades * 100) if all_trades > 0 else 0
                         all_pnl = float(df['PnL_$'].sum())
                         
-                        # Get initial capital from first trade or use default
                         if 'Capital_After' in df.columns and len(df) > 0:
-                            # Work backwards: first_trade_capital_before = Capital_After - PnL
                             first_trade_capital_after = float(df.iloc[0]['Capital_After'])
                             first_trade_pnl = float(df.iloc[0]['PnL_$'])
                             initial_capital = first_trade_capital_after - first_trade_pnl
@@ -270,7 +261,6 @@ def generate_daily_summary():
                 all_trades = all_wins = all_losses = 0
                 all_wr = all_pnl = 0.0
             
-            # Accumulate totals
             total_capital += capital
             total_initial_capital += initial_capital
             total_pnl_today += pnl_today
@@ -278,10 +268,8 @@ def generate_daily_summary():
             total_wins_today += wins_today
             total_losses_today += losses_today
             
-            # Calculate ROI (against initial capital, not current PER_COIN_CAP)
             roi = ((capital / initial_capital) - 1) * 100 if initial_capital > 0 else 0
             
-            # Format coin summary
             coin_summary = f"""
 {symbol}:
   Capital: ${capital:,.2f} ({roi:+.2f}%)
@@ -293,10 +281,8 @@ def generate_daily_summary():
 """
             coin_summaries.append(coin_summary.strip())
         
-        # Add individual coin summaries
         summary_lines.extend(coin_summaries)
         
-        # Portfolio summary
         portfolio_roi = ((total_capital / total_initial_capital) - 1) * 100 if total_initial_capital > 0 else 0
         portfolio_wr_today = (total_wins_today / total_trades_today * 100) if total_trades_today > 0 else 0
         
@@ -313,16 +299,12 @@ def generate_daily_summary():
         print(summary_msg)
         send_telegram(summary_msg)
         
-        return True
-        
     except Exception as e:
-        error_msg = f"❌ Error generating summary: {e}\n{traceback.format_exc()}"
+        error_msg = f"❌ Error generating summary: {e}"
         print(error_msg)
-        send_telegram(f"❌ Error generating summary: {e}")
-        return False
+        print(traceback.format_exc())
+        send_telegram(error_msg)
 
-
-# ✅ NEW: Summary scheduler function
 def daily_summary_scheduler():
     """Run daily summary at specified hour"""
     last_sent_date = None
@@ -333,13 +315,11 @@ def daily_summary_scheduler():
             current_hour = now_ist.hour
             current_date = now_ist.date()
             
-            # Send summary at specified hour, once per day
             if current_hour == SUMMARY_HOUR and current_date != last_sent_date:
                 print(f"\n📊 Generating daily summary at {now_ist.strftime('%I:%M %p IST')}...")
                 generate_daily_summary()
                 last_sent_date = current_date
             
-            # Check every 5 minutes
             time.sleep(300)
             
         except Exception as e:
@@ -687,7 +667,7 @@ def worker(symbol):
 def main():
     now_ist = get_ist_time()
     startup_msg = f"""
-🚀 Bot Started (BACKTEST MATCH v1.1)
+🚀 Bot Started (PRODUCTION v1.0)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⏰ {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}
 📊 Mode: {MODE.upper()}
@@ -695,8 +675,8 @@ def main():
 🪙 Symbols: {', '.join(SYMBOLS)}
 📈 TF: {ENTRY_TF}/{HTF}
 ⚙️ Risk: {RISK_PERCENT*100}% | RR: {RR_FIXED}x
-📊 Daily Summary: {'Enabled' if SEND_DAILY_SUMMARY else 'Disabled'} @ {SUMMARY_HOUR}:00 IST
-✅ NOW MATCHES BACKTEST 100%
+📊 Daily Summary: {'✅ Enabled' if SEND_DAILY_SUMMARY else '❌ Disabled'} @ {SUMMARY_HOUR}:00 IST
+✅ MATCHES BACKTEST 100%
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
     print(startup_msg)
@@ -704,25 +684,22 @@ def main():
     
     threads = []
     
-    # Start worker threads
     for sym in SYMBOLS:
         t = threading.Thread(target=worker, args=(sym,), daemon=True)
         t.start()
         threads.append(t)
         time.sleep(2)
     
-    # ✅ NEW: Start daily summary scheduler
     if SEND_DAILY_SUMMARY:
         summary_thread = threading.Thread(target=daily_summary_scheduler, daemon=True)
         summary_thread.start()
         threads.append(summary_thread)
-        print(f"✅ Daily summary scheduler started (will send at {SUMMARY_HOUR}:00 IST)")
+        print(f"✅ Daily summary scheduler started (sends at {SUMMARY_HOUR}:00 IST)")
     
-    print(f"\n✅ {len(threads)} threads started!\n")
+    print(f"\n✅ {len(threads)} threads running!\n")
     
     while True:
         time.sleep(3600)
 
 if __name__ == "__main__":
     main()
-
