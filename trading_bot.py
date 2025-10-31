@@ -183,22 +183,27 @@ def append_trade(csv_file, row):
     write_header = not os.path.exists(csv_file)
     pd.DataFrame([row]).to_csv(csv_file, mode="a", header=write_header, index=False)
 
-# ✅ NEW: Daily summary function
 def generate_daily_summary():
     """Generate comprehensive daily summary for all coins"""
     try:
         now_ist = get_ist_time()
-        today_str = now_ist.strftime("%Y-%m-%d")
+        today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end_ist = now_ist.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Convert to UTC for comparison with CSV data
+        today_start_utc = today_start_ist.astimezone(pytz.utc).replace(tzinfo=None)
+        today_end_utc = today_end_ist.astimezone(pytz.utc).replace(tzinfo=None)
         
         summary_lines = []
-        summary_lines.append(f"📊 DAILY SUMMARY - {now_ist.strftime('%B %d, %Y')}")
+        summary_lines.append(f"📊 DAILY SUMMARY - {now_ist.strftime('%B %d, %Y, %I:%M %p IST')}")
         summary_lines.append("=" * 60)
         
         total_capital = 0.0
-        total_pnl = 0.0
-        total_trades = 0
-        total_wins = 0
-        total_losses = 0
+        total_initial_capital = 0.0
+        total_pnl_today = 0.0
+        total_trades_today = 0
+        total_wins_today = 0
+        total_losses_today = 0
         
         coin_summaries = []
         
@@ -212,44 +217,76 @@ def generate_daily_summary():
             state = load_state(state_file)
             capital = state["capital"]
             position_status = "OPEN" if state["position"] == 1 else "CLOSED"
+            initial_capital = PER_COIN_CAP_USD
             
             # Load trades
             if os.path.exists(trades_csv):
-                df = pd.read_csv(trades_csv)
-                
-                # Filter today's trades
-                df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime'])
-                today_trades = df[df['Exit_DateTime'].dt.strftime('%Y-%m-%d') == today_str]
-                
-                n_trades = len(today_trades)
-                wins = int(today_trades['Win'].sum())
-                losses = n_trades - wins
-                win_rate = (wins / n_trades * 100) if n_trades > 0 else 0
-                pnl = float(today_trades['PnL_$'].sum()) if n_trades > 0 else 0.0
-                
-                # All-time stats
-                all_trades = len(df)
-                all_wins = int(df['Win'].sum())
-                all_losses = all_trades - all_wins
-                all_wr = (all_wins / all_trades * 100) if all_trades > 0 else 0
-                all_pnl = float(df['PnL_$'].sum())
+                try:
+                    df = pd.read_csv(trades_csv)
+                    
+                    if len(df) > 0:
+                        # Convert Exit_DateTime to datetime (handle both UTC and local)
+                        df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime'], utc=True).dt.tz_localize(None)
+                        
+                        # Filter today's trades (exits that happened today)
+                        today_trades = df[(df['Exit_DateTime'] >= today_start_utc) & 
+                                         (df['Exit_DateTime'] <= today_end_utc)]
+                        
+                        n_trades_today = len(today_trades)
+                        wins_today = int(today_trades['Win'].sum()) if n_trades_today > 0 else 0
+                        losses_today = n_trades_today - wins_today
+                        win_rate_today = (wins_today / n_trades_today * 100) if n_trades_today > 0 else 0
+                        pnl_today = float(today_trades['PnL_$'].sum()) if n_trades_today > 0 else 0.0
+                        
+                        # All-time stats
+                        all_trades = len(df)
+                        all_wins = int(df['Win'].sum())
+                        all_losses = all_trades - all_wins
+                        all_wr = (all_wins / all_trades * 100) if all_trades > 0 else 0
+                        all_pnl = float(df['PnL_$'].sum())
+                        
+                        # Get initial capital from first trade or use default
+                        if 'Capital_After' in df.columns and len(df) > 0:
+                            # Work backwards: first_trade_capital_before = Capital_After - PnL
+                            first_trade_capital_after = float(df.iloc[0]['Capital_After'])
+                            first_trade_pnl = float(df.iloc[0]['PnL_$'])
+                            initial_capital = first_trade_capital_after - first_trade_pnl
+                        
+                    else:
+                        n_trades_today = wins_today = losses_today = 0
+                        win_rate_today = pnl_today = 0.0
+                        all_trades = all_wins = all_losses = 0
+                        all_wr = all_pnl = 0.0
+                        
+                except Exception as e:
+                    print(f"[SUMMARY] Error reading {trades_csv}: {e}")
+                    n_trades_today = wins_today = losses_today = 0
+                    win_rate_today = pnl_today = 0.0
+                    all_trades = all_wins = all_losses = 0
+                    all_wr = all_pnl = 0.0
             else:
-                n_trades = wins = losses = all_trades = all_wins = all_losses = 0
-                win_rate = all_wr = pnl = all_pnl = 0.0
+                n_trades_today = wins_today = losses_today = 0
+                win_rate_today = pnl_today = 0.0
+                all_trades = all_wins = all_losses = 0
+                all_wr = all_pnl = 0.0
             
+            # Accumulate totals
             total_capital += capital
-            total_pnl += pnl
-            total_trades += n_trades
-            total_wins += wins
-            total_losses += losses
+            total_initial_capital += initial_capital
+            total_pnl_today += pnl_today
+            total_trades_today += n_trades_today
+            total_wins_today += wins_today
+            total_losses_today += losses_today
+            
+            # Calculate ROI (against initial capital, not current PER_COIN_CAP)
+            roi = ((capital / initial_capital) - 1) * 100 if initial_capital > 0 else 0
             
             # Format coin summary
-            roi = ((capital / PER_COIN_CAP_USD) - 1) * 100
             coin_summary = f"""
 {symbol}:
   Capital: ${capital:,.2f} ({roi:+.2f}%)
-  Today: {n_trades} trades | {wins}W/{losses}L | WR: {win_rate:.1f}%
-  Today PnL: ${pnl:+.2f}
+  Today: {n_trades_today} trades | {wins_today}W/{losses_today}L | WR: {win_rate_today:.1f}%
+  Today PnL: ${pnl_today:+.2f}
   All-time: {all_trades} trades | {all_wins}W/{all_losses}L | WR: {all_wr:.1f}%
   All-time PnL: ${all_pnl:+.2f}
   Position: {position_status}
@@ -260,25 +297,30 @@ def generate_daily_summary():
         summary_lines.extend(coin_summaries)
         
         # Portfolio summary
-        portfolio_roi = ((total_capital / TOTAL_PORTFOLIO_CAPITAL) - 1) * 100
-        portfolio_wr = (total_wins / total_trades * 100) if total_trades > 0 else 0
+        portfolio_roi = ((total_capital / total_initial_capital) - 1) * 100 if total_initial_capital > 0 else 0
+        portfolio_wr_today = (total_wins_today / total_trades_today * 100) if total_trades_today > 0 else 0
         
         summary_lines.append("\n" + "=" * 60)
         summary_lines.append("PORTFOLIO TOTAL:")
-        summary_lines.append(f"  Total Capital: ${total_capital:,.2f} ({portfolio_roi:+.2f}%)")
-        summary_lines.append(f"  Today Trades: {total_trades} | {total_wins}W/{total_losses}L")
-        summary_lines.append(f"  Today Win Rate: {portfolio_wr:.1f}%")
-        summary_lines.append(f"  Today PnL: ${total_pnl:+.2f}")
+        summary_lines.append(f"  Initial Capital: ${total_initial_capital:,.2f}")
+        summary_lines.append(f"  Current Capital: ${total_capital:,.2f} ({portfolio_roi:+.2f}%)")
+        summary_lines.append(f"  Today Trades: {total_trades_today} | {total_wins_today}W/{total_losses_today}L")
+        summary_lines.append(f"  Today Win Rate: {portfolio_wr_today:.1f}%")
+        summary_lines.append(f"  Today PnL: ${total_pnl_today:+.2f}")
         summary_lines.append("=" * 60)
         
         summary_msg = "\n".join(summary_lines)
         print(summary_msg)
         send_telegram(summary_msg)
         
+        return True
+        
     except Exception as e:
-        error_msg = f"❌ Error generating summary: {e}"
+        error_msg = f"❌ Error generating summary: {e}\n{traceback.format_exc()}"
         print(error_msg)
-        send_telegram(error_msg)
+        send_telegram(f"❌ Error generating summary: {e}")
+        return False
+
 
 # ✅ NEW: Summary scheduler function
 def daily_summary_scheduler():
@@ -683,3 +725,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
