@@ -64,6 +64,10 @@ FEE_RATE = float(os.getenv("FEE_RATE", "0.001"))
 SLEEP_CAP = int(os.getenv("SLEEP_CAP", "60"))
 DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
+# ✅ NEW: Daily summary settings
+SEND_DAILY_SUMMARY = os.getenv("SEND_DAILY_SUMMARY", "true").lower() == "true"
+SUMMARY_HOUR = int(os.getenv("SUMMARY_HOUR", "20"))  # 8 PM IST default
+
 if MODE == "live":
     SLIPPAGE_RATE = 0.0
     FEE_RATE = 0.0
@@ -179,6 +183,127 @@ def append_trade(csv_file, row):
     write_header = not os.path.exists(csv_file)
     pd.DataFrame([row]).to_csv(csv_file, mode="a", header=write_header, index=False)
 
+# ✅ NEW: Daily summary function
+def generate_daily_summary():
+    """Generate comprehensive daily summary for all coins"""
+    try:
+        now_ist = get_ist_time()
+        today_str = now_ist.strftime("%Y-%m-%d")
+        
+        summary_lines = []
+        summary_lines.append(f"📊 DAILY SUMMARY - {now_ist.strftime('%B %d, %Y')}")
+        summary_lines.append("=" * 60)
+        
+        total_capital = 0.0
+        total_pnl = 0.0
+        total_trades = 0
+        total_wins = 0
+        total_losses = 0
+        
+        coin_summaries = []
+        
+        for symbol in SYMBOLS:
+            state_file, trades_csv = state_files_for_symbol(symbol)
+            
+            # Load state
+            if not os.path.exists(state_file):
+                continue
+                
+            state = load_state(state_file)
+            capital = state["capital"]
+            position_status = "OPEN" if state["position"] == 1 else "CLOSED"
+            
+            # Load trades
+            if os.path.exists(trades_csv):
+                df = pd.read_csv(trades_csv)
+                
+                # Filter today's trades
+                df['Exit_DateTime'] = pd.to_datetime(df['Exit_DateTime'])
+                today_trades = df[df['Exit_DateTime'].dt.strftime('%Y-%m-%d') == today_str]
+                
+                n_trades = len(today_trades)
+                wins = int(today_trades['Win'].sum())
+                losses = n_trades - wins
+                win_rate = (wins / n_trades * 100) if n_trades > 0 else 0
+                pnl = float(today_trades['PnL_$'].sum()) if n_trades > 0 else 0.0
+                
+                # All-time stats
+                all_trades = len(df)
+                all_wins = int(df['Win'].sum())
+                all_losses = all_trades - all_wins
+                all_wr = (all_wins / all_trades * 100) if all_trades > 0 else 0
+                all_pnl = float(df['PnL_$'].sum())
+            else:
+                n_trades = wins = losses = all_trades = all_wins = all_losses = 0
+                win_rate = all_wr = pnl = all_pnl = 0.0
+            
+            total_capital += capital
+            total_pnl += pnl
+            total_trades += n_trades
+            total_wins += wins
+            total_losses += losses
+            
+            # Format coin summary
+            roi = ((capital / PER_COIN_CAP_USD) - 1) * 100
+            coin_summary = f"""
+{symbol}:
+  Capital: ${capital:,.2f} ({roi:+.2f}%)
+  Today: {n_trades} trades | {wins}W/{losses}L | WR: {win_rate:.1f}%
+  Today PnL: ${pnl:+.2f}
+  All-time: {all_trades} trades | {all_wins}W/{all_losses}L | WR: {all_wr:.1f}%
+  All-time PnL: ${all_pnl:+.2f}
+  Position: {position_status}
+"""
+            coin_summaries.append(coin_summary.strip())
+        
+        # Add individual coin summaries
+        summary_lines.extend(coin_summaries)
+        
+        # Portfolio summary
+        portfolio_roi = ((total_capital / TOTAL_PORTFOLIO_CAPITAL) - 1) * 100
+        portfolio_wr = (total_wins / total_trades * 100) if total_trades > 0 else 0
+        
+        summary_lines.append("\n" + "=" * 60)
+        summary_lines.append("PORTFOLIO TOTAL:")
+        summary_lines.append(f"  Total Capital: ${total_capital:,.2f} ({portfolio_roi:+.2f}%)")
+        summary_lines.append(f"  Today Trades: {total_trades} | {total_wins}W/{total_losses}L")
+        summary_lines.append(f"  Today Win Rate: {portfolio_wr:.1f}%")
+        summary_lines.append(f"  Today PnL: ${total_pnl:+.2f}")
+        summary_lines.append("=" * 60)
+        
+        summary_msg = "\n".join(summary_lines)
+        print(summary_msg)
+        send_telegram(summary_msg)
+        
+    except Exception as e:
+        error_msg = f"❌ Error generating summary: {e}"
+        print(error_msg)
+        send_telegram(error_msg)
+
+# ✅ NEW: Summary scheduler function
+def daily_summary_scheduler():
+    """Run daily summary at specified hour"""
+    last_sent_date = None
+    
+    while True:
+        try:
+            now_ist = get_ist_time()
+            current_hour = now_ist.hour
+            current_date = now_ist.date()
+            
+            # Send summary at specified hour, once per day
+            if current_hour == SUMMARY_HOUR and current_date != last_sent_date:
+                print(f"\n📊 Generating daily summary at {now_ist.strftime('%I:%M %p IST')}...")
+                generate_daily_summary()
+                last_sent_date = current_date
+            
+            # Check every 5 minutes
+            time.sleep(300)
+            
+        except Exception as e:
+            print(f"[SUMMARY SCHEDULER] Error: {e}")
+            time.sleep(300)
+
 class MarketInfo:
     def __init__(self, exchange, symbol):
         mkts = exchange.load_markets()
@@ -211,14 +336,13 @@ def avg_fill_price_from_order(order):
         if qty > 0: return notional / qty
     return None
 
-# ✅ FIXED: Added spot position sizing function from backtest
 def calculate_spot_position_size(price, sl, capital, risk_percent, max_trade_size):
     """Calculate position size for spot trading - MATCHES BACKTEST"""
     risk_per_trade = capital * risk_percent
     risk_per_coin = abs(price - sl)
     
     max_by_risk = risk_per_trade / risk_per_coin if risk_per_coin > 0 else 0
-    max_by_capital = capital / price  # SPOT CONSTRAINT!
+    max_by_capital = capital / price
     
     size_base = min(max_by_risk, max_by_capital, max_trade_size / price)
     return max(size_base, 0)
@@ -281,7 +405,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             else:
                 exit_price = price
             
-            # ✅ FIXED: Calculate costs based on POSITION VALUE
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             position_value_at_exit = exit_price * state["entry_size"]
             exit_slippage = position_value_at_exit * SLIPPAGE_RATE
@@ -317,7 +440,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
     
     blocked = state.get("permanently_stopped", False)
     
-    # Exit logic
     if state["position"] == 1 and not blocked:
         exit_flag = False
         exit_price = price
@@ -329,7 +451,7 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
         elif price <= state["entry_sl"]:
             exit_flag, exit_price, exit_reason = True, state["entry_sl"], "Stop Loss"
             state["bearish_count"] = 0
-        elif USE_H1_FILTER and h4_trend < 0 and bias < 0:  # ✅ FIXED: Added bias confirmation
+        elif USE_H1_FILTER and h4_trend < 0 and bias < 0:
             exit_flag, exit_price, exit_reason = True, price, "4H Trend Reversal"
             state["bearish_count"] = 0
         elif bias < 0:
@@ -349,7 +471,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                     send_telegram(f"❌ {symbol} Exit error: {e}")
                     raise
             
-            # ✅ FIXED: Calculate costs based on POSITION VALUE
             gross_pnl = state["entry_size"] * (exit_price - state["entry_price"])
             position_value_at_exit = exit_price * state["entry_size"]
             exit_slippage = position_value_at_exit * SLIPPAGE_RATE
@@ -382,7 +503,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             
             send_telegram(f"{'💚' if net_pnl > 0 else '❤️'} EXIT {symbol} {exit_reason} @ ${exit_price:.4f} PnL=${net_pnl:.2f}")
     
-    # Entry logic - ✅ FIXED: Now matches backtest
     if state["position"] == 0 and not blocked:
         if COOLDOWN_HOURS > 0 and state.get("last_exit_time") is not None:
             time_diff_hours = (ts - state["last_exit_time"]).total_seconds() / 3600
@@ -426,7 +546,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
             
             tp = price + rr_ratio * risk
             
-            # ✅ FIXED: Use correct spot position sizing
             size_base = calculate_spot_position_size(
                 price, sl, state["capital"], RISK_PERCENT, MAX_TRADE_SIZE
             )
@@ -452,7 +571,6 @@ def process_bar(symbol, entry_df, htf_df, state, exchange=None, market_info: Mar
                 state["entry_size"] = size_base
                 state["bearish_count"] = 0
                 
-                # ✅ FIXED: Calculate costs based on POSITION VALUE
                 position_value = entry_price_used * size_base
                 entry_slippage = position_value * SLIPPAGE_RATE
                 entry_fee = position_value * FEE_RATE
@@ -527,7 +645,7 @@ def worker(symbol):
 def main():
     now_ist = get_ist_time()
     startup_msg = f"""
-🚀 Bot Started (BACKTEST MATCH v1.0)
+🚀 Bot Started (BACKTEST MATCH v1.1)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⏰ {now_ist.strftime('%Y-%m-%d %I:%M %p IST')}
 📊 Mode: {MODE.upper()}
@@ -535,6 +653,7 @@ def main():
 🪙 Symbols: {', '.join(SYMBOLS)}
 📈 TF: {ENTRY_TF}/{HTF}
 ⚙️ Risk: {RISK_PERCENT*100}% | RR: {RR_FIXED}x
+📊 Daily Summary: {'Enabled' if SEND_DAILY_SUMMARY else 'Disabled'} @ {SUMMARY_HOUR}:00 IST
 ✅ NOW MATCHES BACKTEST 100%
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -542,13 +661,22 @@ def main():
     send_telegram(startup_msg.replace('━', '-'))
     
     threads = []
+    
+    # Start worker threads
     for sym in SYMBOLS:
         t = threading.Thread(target=worker, args=(sym,), daemon=True)
         t.start()
         threads.append(t)
         time.sleep(2)
     
-    print(f"\n✅ {len(threads)} workers started!\n")
+    # ✅ NEW: Start daily summary scheduler
+    if SEND_DAILY_SUMMARY:
+        summary_thread = threading.Thread(target=daily_summary_scheduler, daemon=True)
+        summary_thread.start()
+        threads.append(summary_thread)
+        print(f"✅ Daily summary scheduler started (will send at {SUMMARY_HOUR}:00 IST)")
+    
+    print(f"\n✅ {len(threads)} threads started!\n")
     
     while True:
         time.sleep(3600)
