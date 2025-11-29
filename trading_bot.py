@@ -220,7 +220,7 @@ def get_top_gainers(exchange, limit=5):
     if not rows:
         return SYMBOLS[:limit]
 
-    rows.sort(key=lambda x: x[1], reverse=True)
+    rows.sort(key=lambda x: x[1])
     return [s for s,_ in rows[:limit]]
 
 # =========================
