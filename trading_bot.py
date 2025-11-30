@@ -220,7 +220,7 @@ def get_top_gainers(exchange, limit=5):
     if not rows:
         return SYMBOLS[:limit]
 
-    rows.sort(key=lambda x: x[1])
+    rows.sort(key=lambda x: x[1], reverse=True)
     return [s for s,_ in rows[:limit]]
 
 # =========================
@@ -924,3 +924,4 @@ Rotation: every {ROTATION_INTERVAL_HOURS:.1f} hours (aggressive)
 
 if __name__ == "__main__":
     main()
+
